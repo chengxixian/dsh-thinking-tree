@@ -239,50 +239,52 @@ function selfCheckPrompt(goalTitle, round) {
 }
 
 /**
- * Wake one Session's agent with a self-check round.
+ * Wake the agent so a self-check actually starts.
+ *
+ * `sessionController.prompt` takes a `SessionPromptRequest`: a request id, the
+ * session, a delivery mode and prompt content. Passing any other shape rejects
+ * silently, which is why an earlier version never started anything.
  * @param ctx - Host context.
- * @param sessionId - the Session to wake.
- * @param goalTitle - goal node title.
- * @param round - round number for the prompt.
- * @returns whether a wake-up was accepted.
+ * @param sessionId - Session to wake.
+ * @param goalTitle - goal text for the reminder.
+ * @param round - self-check round number.
+ * @returns `{ ok, error }`.
  */
-function pokeSelfCheck(ctx, sessionId, goalTitle, round) {
+async function pokeSelfCheck(ctx, sessionId, goalTitle, round) {
   const text = selfCheckPrompt(goalTitle, round)
   const controller = ctx.get('sessionController')
   if (controller !== undefined && controller !== null && typeof controller.prompt === 'function') {
-    const payloads = [
-      { sessionId, text },
-      { sessionId, content: [{ type: 'text', text }] },
-      { sessionId, message: text },
-    ]
-    for (const payload of payloads) {
-      try {
-        const result = controller.prompt(payload)
-        if (result !== undefined && typeof result.then === 'function') result.catch(() => undefined)
-        return true
-      } catch {
-        // Try the next accepted shape.
-      }
-    }
-  }
-  const agents = ctx.get('agents')
-  const agent = agents === undefined || agents === null ? undefined : agents.get?.(sessionId)
-  if (agent !== undefined && agent !== null && typeof agent.followup === 'function') {
     try {
-      agent.followup({ role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } })
-      return true
-    } catch {
-      return false
+      await controller.prompt({
+        requestId: `selfcheck-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text }],
+      })
+      return { ok: true }
+    } catch (error) {
+      const message = String(error?.message ?? error)
+      const agents = ctx.get('agents')
+      const agent = agents === undefined || agents === null ? undefined : agents.get?.(sessionId)
+      if (agent !== undefined && agent !== null && typeof agent.followup === 'function') {
+        try {
+          await agent.followup({ role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } })
+          return { ok: true }
+        } catch (nested) {
+          return { ok: false, error: `${message} / ${String(nested?.message ?? nested)}` }
+        }
+      }
+      return { ok: false, error: message }
     }
   }
-  return false
+  return { ok: false, error: 'no session controller' }
 }
 
 /**
  * Switch the self-check loop on or off for one Session.
  * @param ctx - Host context.
- * @param request - `POST` `{ sessionId, mode? }`; `mode` is `on`, `off`, or `toggle`.
- * @returns the resulting state and whether the agent was woken.
+ * @param request - `POST` `{ sessionId, mode? }`; `mode` is `on`, `off`, `pass`, or omitted to toggle.
+ * @returns the resulting state, whether the agent was woken, and why not.
  */
 async function serveSelfCheck(ctx, request) {
   const input = await readJson(request)
@@ -294,15 +296,29 @@ async function serveSelfCheck(ctx, request) {
     const shaped = shapeTree(tree.nodes)
     const goal = shaped.roots[0]
     if (goal === undefined) return json({ ok: false, error: 'no-goal', message: 'create the goal node first' }, 400)
-    const wanted = input.mode === 'on' ? 'on' : input.mode === 'off' ? 'passed' : (goal.selfcheck === 'on' ? 'passed' : 'on')
+    // `off` means "stop asking", never "passed": only the agent's own verdict
+    // may mark the goal passed, or a stop click would fake a success.
+    const wanted = input.mode === 'on'
+      ? 'on'
+      : input.mode === 'off'
+        ? 'off'
+        : input.mode === 'pass'
+          ? 'passed'
+          : (goal.selfcheck === 'on' ? 'off' : 'on')
     const path = join(folder.dir, goal.name)
     let text = await readFile(path, 'utf8')
     text = writeField(text, 'selfcheck', wanted)
     if (wanted === 'on') text = writeField(text, 'selfcheck-round', 1)
     text = writeField(text, 'updated', new Date().toISOString())
     await writeFile(path, text, 'utf8')
-    const poked = wanted === 'on' ? pokeSelfCheck(ctx, input.sessionId, goal.title, 1) : false
-    return json({ ok: true, selfcheck: wanted, poked })
+    let poked = false
+    let pokeError = ''
+    if (wanted === 'on') {
+      const result = await pokeSelfCheck(ctx, input.sessionId, goal.title, 1)
+      poked = result.ok === true
+      pokeError = result.error || ''
+    }
+    return json({ ok: true, selfcheck: wanted, poked, pokeError })
   } catch (error) {
     return json({ ok: false, error: 'selfcheck-failed', message: String(error?.message ?? error) }, 500)
   }
@@ -337,7 +353,7 @@ async function selfCheckAfterTurn(ctx, payload) {
     text = writeField(text, 'selfcheck-round', round)
     text = writeField(text, 'updated', new Date().toISOString())
     await writeFile(path, text, 'utf8')
-    setTimeout(() => { pokeSelfCheck(ctx, sessionId, goal.title, round) }, 600)
+    setTimeout(() => { void pokeSelfCheck(ctx, sessionId, goal.title, round) }, 600)
   } catch {
     // The loop must never break a turn.
   }

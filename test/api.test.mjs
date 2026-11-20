@@ -16,9 +16,20 @@ import {
 
 const root = mkdtempSync(join(tmpdir(), 'thinking-tree-test-'))
 const sessionId = 'session-test'
+// A stand-in for the Host's session controller: it records the exact prompt
+// request so the test can prove the wake-up uses the real contract.
+const prompts = []
 const ctx = {
   get(name) {
     if (name === 'sessions') return { get: id => (id === sessionId ? { header: { cwd: root } } : undefined) }
+    if (name === 'sessionController') {
+      return {
+        prompt: async request => {
+          prompts.push(request)
+          return { accepted: true }
+        },
+      }
+    }
     return undefined
   },
 }
@@ -121,6 +132,28 @@ let childName
   const goal = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === goalName)
   check('the self-check flag lands on the goal node', res.body.selfcheck === 'on' && goal.selfcheck === 'on', {
     goal: goal.selfcheck,
+  })
+  const wake = prompts[0]
+  check('enabling self-check wakes the agent with a valid prompt request', res.body.poked === true && wake !== undefined && typeof wake.requestId === 'string' && wake.requestId.length > 0 && wake.mode === 'queue' && wake.content?.[0]?.type === 'text' && typeof wake.content[0].text === 'string', {
+    poked: res.body.poked,
+    requestId: wake?.requestId,
+    mode: wake?.mode,
+    parts: wake?.content?.length,
+  })
+}
+
+{
+  const off = await once(serveSelfCheck, post('selfcheck', { sessionId, mode: 'off' }))
+  const goalOff = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === goalName)
+  check('stopping self-check never fakes a pass', off.body.selfcheck === 'off' && goalOff.selfcheck === 'off', {
+    state: off.body.selfcheck,
+    file: goalOff.selfcheck,
+  })
+  const pass = await once(serveSelfCheck, post('selfcheck', { sessionId, mode: 'pass' }))
+  const goalPassed = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === goalName)
+  check('only an explicit pass marks the goal passed', pass.body.selfcheck === 'passed' && goalPassed.selfcheck === 'passed', {
+    state: pass.body.selfcheck,
+    file: goalPassed.selfcheck,
   })
 }
 

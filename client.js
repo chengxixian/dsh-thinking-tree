@@ -80,6 +80,7 @@ window.__ModuleLoader__.load({
       selfcheckStopped: 'Stopped',
       selfcheckHint: 'Once on, every finished turn re-checks the chain and keeps working until the goal passes',
       selfcheckNoWake: 'Self-check is on, but the agent could not be woken automatically; say "self-check" once',
+      selfcheckStarted: 'Self-check started: the agent is checking the chain against the goal now',
       newNode: 'New node',
       addHint: 'Add a child block',
       deleteHint: 'Delete this block and its subtree',
@@ -134,6 +135,7 @@ window.__ModuleLoader__.load({
       selfcheckStopped: '自检已停',
       selfcheckHint: '开启后每轮结束都按思考链自检，未达成目标就继续做，直到通过',
       selfcheckNoWake: '自检已开启，但没能自动唤醒模型，发一句“自检”即可',
+      selfcheckStarted: '自检已开始：模型正在按思考链逐条核对目标',
       newNode: '新节点',
       addHint: '加子节点',
       deleteHint: '删除这个块及其子树',
@@ -435,8 +437,13 @@ window.__ModuleLoader__.load({
 .dsh-tt-head-path{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 .dsh-tt-btn{border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:6px;cursor:pointer;font-size:11px;padding:3px 7px;font-family:inherit;transition:background .12s,color .12s}
 .dsh-tt-btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
-.dsh-tt-btn-primary{background:var(--dsw-alias-brand-primary);color:#fff;border-color:transparent;padding:5px 12px;font-weight:600}
-.dsh-tt-btn-primary:hover{opacity:.9;background:var(--dsw-alias-brand-primary);color:#fff}
+.dsh-tt-btn-primary{background:#d92f2f;color:#fff;border-color:#d92f2f;padding:5px 12px;font-weight:600}
+.dsh-tt-btn-primary:hover{background:#e8453a;color:#fff}
+.dsh-tt-btn-running{background:#c6241c;color:#fff;border-color:#c6241c;padding:5px 12px;font-weight:600;animation:dsh-tt-breathe 1.8s ease-in-out infinite}
+.dsh-tt-btn-running:hover{background:#d92f2f;color:#fff}
+.dsh-tt-btn-passed{background:#1f7a45;color:#fff;border-color:#1f7a45;padding:5px 12px;font-weight:600}
+.dsh-tt-btn-passed:hover{background:#268a4f;color:#fff}
+@keyframes dsh-tt-breathe{0%,100%{opacity:1}50%{opacity:.55}}
 .dsh-tt-btn:disabled{opacity:.45;cursor:default}
 .dsh-tt-canvas{position:relative;flex:1;min-height:0;overflow:auto;cursor:grab;background:
   radial-gradient(circle at 1px 1px, var(--dsw-alias-border-l1) 1px, transparent 0) 0 0/18px 18px}
@@ -511,11 +518,12 @@ window.__ModuleLoader__.load({
      * @returns {object} React element.
      */
     function Button(props) {
+      const tone = props.tone === undefined ? (props.primary === true ? 'primary' : 'plain') : props.tone
       return h(
         'button',
         {
           type: 'button',
-          className: `dsh-tt-btn${props.primary ? ' dsh-tt-btn-primary' : ''}`,
+          className: `dsh-tt-btn${tone === 'plain' ? '' : ` dsh-tt-btn-${tone}`}`,
           onClick: props.onClick,
           disabled: props.disabled === true,
           title: props.title,
@@ -1277,17 +1285,21 @@ window.__ModuleLoader__.load({
           : selfcheck === 'stopped'
             ? t('selfcheckStopped')
             : t('selfcheckOff')
+      const selfcheckTone = selfcheck === 'on' ? 'running' : selfcheck === 'passed' ? 'passed' : 'plain'
       const toggleSelfCheck = async () => {
         if (sessionId === '') return
         setBusy(true)
         setNotice('')
+        const turningOn = selfcheck !== 'on'
         try {
           const result = await call('selfcheck', {
             method: 'POST',
-            body: { sessionId, mode: selfcheck === 'on' ? 'off' : 'on' },
+            body: { sessionId, mode: turningOn ? 'on' : 'off' },
           })
           await load(true)
-          if (result.selfcheck === 'on' && result.poked !== true) setNotice(t('selfcheckNoWake'))
+          if (result.selfcheck === 'on') {
+            setNotice(result.poked === true ? t('selfcheckStarted') : `${t('selfcheckNoWake')}${result.pokeError ? ` (${result.pokeError})` : ''}`)
+          }
         } catch (error) {
           setState(previous => ({ ...previous, error: String(error?.message ?? error) }))
         } finally {
@@ -1337,7 +1349,7 @@ window.__ModuleLoader__.load({
           h(Button, {
             label: selfcheckLabel,
             title: t('selfcheckHint'),
-            primary: selfcheck === 'on',
+            tone: selfcheckTone,
             disabled: busy || sessionId === '',
             onClick: () => void toggleSelfCheck(),
           }),
