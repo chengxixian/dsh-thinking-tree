@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Thinking tree",
+    "description": "Shows the task's chain of thought as a live tree in the right sidebar: the goal on top, the approach and technical route in the middle, concrete steps at the bottom. Every node is one Markdown file in the workspace's thinking-tree folder, so you can edit any block in the panel and the agent reads your edit before it implements. Includes a bundled skill that keeps the tree updated while it works.",
+    "detail": "docs/DETAIL.md"
+  }
+}
