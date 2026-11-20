@@ -873,8 +873,9 @@ window.__ModuleLoader__.load({
             className: 'dsh-tt-node',
             transform: `translate(${box.x} ${box.y})`,
             onClick: event => {
+              // Selection happens on pointer release; the click must not toggle
+              // it a second time or the drawer would open and close at once.
               event.stopPropagation()
-              onSelect(box.node.name)
             },
             // Hold the left button on a block to move it; the position is
             // written to the node's front matter when the button is released.
@@ -1141,7 +1142,13 @@ window.__ModuleLoader__.load({
 
       const data = state.data
       const byId = new Map()
-      if (data !== null) for (const node of data.nodes) byId.set(node.id, node)
+      const byName = new Map()
+      if (data !== null) {
+        for (const node of data.nodes) {
+          byId.set(node.id, node)
+          byName.set(node.name, node)
+        }
+      }
       const attach = (node, seen) => ({
         ...node,
         childNodes: (node.children || [])
@@ -1161,6 +1168,10 @@ window.__ModuleLoader__.load({
       // writes its position into the node's front matter.
       const nodeDrag = React.useRef(null)
       const dragged = React.useRef(false)
+      const toggleRef = React.useRef(null)
+      toggleRef.current = (name) => {
+        setSelected(current => (current === name ? null : name))
+      }
       const movedRef = React.useRef(moved)
       movedRef.current = moved
       const mutateRef = React.useRef(mutate)
@@ -1199,7 +1210,15 @@ window.__ModuleLoader__.load({
           const dragState = nodeDrag.current
           if (dragState === null) return
           nodeDrag.current = null
-          setTimeout(() => { dragged.current = false }, 0)
+          const didMove = dragged.current
+          dragged.current = false
+          // A press that never moved is a click on the block: open its editor.
+          // Doing it here does not depend on the browser delivering a click
+          // after the drag hook swallowed the press.
+          if (!didMove) {
+            toggleRef.current(dragState.name)
+            return
+          }
           const at = movedRef.current[dragState.name]
           if (at === undefined) return
           void mutateRef.current('position', { name: dragState.name, x: Math.round(at.x), y: Math.round(at.y) })
@@ -1211,7 +1230,10 @@ window.__ModuleLoader__.load({
           window.removeEventListener('mouseup', onUp)
         }
       }, [])
-      const selectedNode = selected === null ? undefined : byId.get(selected)
+      // The selection carries the file name; the lookup map is keyed by id, so a
+// name lookup is what the drawer needs. Mixing the two silently cleared the
+// selection on every click.
+      const selectedNode = selected === null ? undefined : byName.get(selected)
 
       React.useEffect(() => {
         if (selectedNode === undefined) {
@@ -1471,8 +1493,9 @@ window.__ModuleLoader__.load({
                   height: map.height,
                   zoom,
                   selected,
+                  // Selection is handled on pointer release (see onUp), so the
+                  // click only stops here instead of toggling a second time.
                   onSelect: (name) => {
-                    // A drag ends with a click on the same block; that one is a move, not a selection.
                     if (dragged.current) {
                       dragged.current = false
                       return

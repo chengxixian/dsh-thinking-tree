@@ -37,6 +37,8 @@ const ROUTE_PREFIX = '/api/thinking-tree'
 const STATUSES = ['pending', 'active', 'done', 'blocked']
 
 const SKILL_BODY_URL = new URL('./assets/thinking-tree/SKILL.md', import.meta.url)
+const SELF_CHECK_SKILL_NAME = 'thinking-tree-selfcheck'
+const SELF_CHECK_BODY_URL = new URL('./assets/thinking-tree-selfcheck/SKILL.md', import.meta.url)
 const RESOURCE_BASE = {
   kind: 'directory',
   path: fileURLToPath(new URL('./assets/thinking-tree/', import.meta.url)),
@@ -71,6 +73,44 @@ const skillProvider = {
   },
 }
 
+const SELF_CHECK_DESCRIPTION = 'Run one self-check round for the tree-shaped chain of thought: verify every requirement on the thinking-tree against evidence, finish whatever is still unfinished, and only then declare the goal passed. Invoked by the panel\'s self-check button.'
+
+/**
+ * Build a bundled skill provider for one Markdown body.
+ * @param name - skill identifier.
+ * @param bodyUrl - `file:` URL of the skill body.
+ * @param description - one-line catalog description.
+ * @param resourceDir - directory exposed as the skill's resources.
+ * @returns a provider object `{ name, list, get }`.
+ */
+function makeSkillProvider(name, bodyUrl, description, resourceDir) {
+  const candidate = {
+    name,
+    description,
+    invocation: { modelInvocable: true, userInvocable: true },
+    provider: name,
+    source: 'bundled',
+    resourceBase: { kind: 'directory', path: resourceDir },
+    rank: 600,
+    locator: bodyUrl,
+  }
+  return {
+    name,
+    list: () => Promise.resolve([candidate]),
+    async get() {
+      return {
+        name: candidate.name,
+        description: candidate.description,
+        invocation: candidate.invocation,
+        provider: candidate.provider,
+        source: candidate.source,
+        resourceBase: candidate.resourceBase,
+        content: await readFile(bodyUrl, 'utf8'),
+      }
+    },
+  }
+}
+
 /** Services that must exist before this plugin activates. */
 export const inject = ['skills', 'connection']
 
@@ -83,6 +123,15 @@ export const name = 'thinking-tree'
  */
 export function apply(ctx) {
   ctx.effect(() => ctx.skills.registerProvider(() => skillProvider), 'thinking-tree: skill provider')
+  ctx.effect(
+    () => ctx.skills.registerProvider(() => makeSkillProvider(
+      SELF_CHECK_SKILL_NAME,
+      SELF_CHECK_BODY_URL,
+      SELF_CHECK_DESCRIPTION,
+      fileURLToPath(new URL('./assets/thinking-tree-selfcheck/', import.meta.url)),
+    )),
+    'thinking-tree: self-check skill provider',
+  )
 
   // The self-check loop: while the goal node says `selfcheck: on`, every turn
   // that ends starts the next verification round.
@@ -227,16 +276,9 @@ const MAX_SELF_CHECK_ROUNDS = 40
  * @returns the prompt text.
  */
 function selfCheckPrompt(goalTitle, round) {
-  return [
-    `【思考链自检 第 ${round} 轮】目标：${goalTitle}`,
-    '',
-    '按 thinking-tree 技能执行一次自检，不要只回话，要动手核对：',
-    '1. 读 thinking-tree/ 下全部节点，重点是第二层的每一条“要求”。',
-    '2. 逐条核对要求是否真的达成，必须有证据：文件存在且内容对、命令跑通、页面/接口的实际行为。没有证据就算未完成。',
-    '3. 未完成的：把该节点 status 置 blocked，正文写清缺什么，然后立刻继续做。',
-    '4. 全部达成且有证据：把 00-goal.md 的 selfcheck 改成 passed、status 改成 done，并在正文补“结果：…”。',
-    '5. 没达成之前不要改 selfcheck，也不要宣布完成。',
-  ].join('\n')
+  // Kept short on purpose: this text is the user bubble the panel shows in the
+  // conversation, so the procedure itself lives in the skill it names.
+  return [`开始自检 · 第 ${round} 轮`, `用 ${SELF_CHECK_SKILL_NAME} 技能执行。目标：${goalTitle || '（见 00-goal.md）'}`].join('\n')
 }
 
 /**
