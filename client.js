@@ -530,6 +530,55 @@ window.__ModuleLoader__.load({
      * ---------------------------------------------------------------- */
 
     /**
+     * Open the panel from wherever the caller sits.
+     * @param {object} ctx - client plugin context.
+     */
+    function openPanel(ctx) {
+      const sidebar = typeof ctx.get === 'function' ? ctx.get('sidebarRight') : ctx.sidebarRight
+      try {
+        if (sidebar !== undefined && sidebar !== null && typeof sidebar.openTab === 'function') {
+          sidebar.openTab(TAB_KIND)
+          return
+        }
+      } catch {
+        /* fall through */
+      }
+      try {
+        ctx.layout.openRightbar(true, false)
+      } catch {
+        /* nothing else to try */
+      }
+    }
+
+    /**
+     * The in-header entry point: a normal slot button the shell always paints.
+     * @param {object} props - `{ ctx, t }`.
+     * @returns {object} React element.
+     */
+    function HeaderButton(props) {
+      const { ctx, t } = props
+      return h(
+        'button',
+        {
+          type: 'button',
+          className: 'dsh-tt-btn',
+          title: t('edgeLabel'),
+          'aria-label': t('edgeLabel'),
+          onClick: () => openPanel(ctx),
+          style: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 8px' },
+        },
+        h(
+          'svg',
+          { width: 13, height: 13, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
+          h('path', { d: 'M3 2.5v11', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
+          h('path', { d: 'M3 5.5h4a1.8 1.8 0 0 1 0 3.6H5a1.8 1.8 0 0 0 0 3.6h6', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
+          h('circle', { cx: 12, cy: 5.5, r: 1.5, fill: 'currentColor' }),
+        ),
+        t('tabTitle'),
+      )
+    }
+
+    /**
      * Mount the button on the right edge of the window.
      *
      * Deliberately not a slot entry: the shell draws overlay occupants inside a
@@ -1460,6 +1509,13 @@ window.__ModuleLoader__.load({
         )), 'thinking-tree: panel body')
 
         ctx.effect(() => mountEdgeButton(ctx, t), 'thinking-tree: edge button')
+
+        // A second, guaranteed-painted entry point: the shell always draws this
+        // header seat, while a body-level fixed layer can end up behind a column.
+        ctx.effect(() => ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register(
+          { name: 'conversation.session.header.utilities', id: 'thinking-tree-header', order: 20 },
+          () => h(HeaderButton, { ctx, t }),
+        )), 'thinking-tree: header button')
       },
     }
   },
