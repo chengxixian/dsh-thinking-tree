@@ -81,6 +81,8 @@ window.__ModuleLoader__.load({
       selfcheckHint: 'Once on, every finished turn re-checks the chain and keeps working until the goal passes',
       selfcheckNoWake: 'Self-check is on, but the agent could not be woken automatically; say "self-check" once',
       selfcheckStarted: 'Self-check started: the agent is checking the chain against the goal now',
+      selfcheckLoop: 'every turn continues it · 40 rounds max',
+      selfcheckCounting: 'requirements',
       newNode: 'New node',
       addHint: 'Add a child block',
       deleteHint: 'Delete this block and its subtree',
@@ -136,6 +138,8 @@ window.__ModuleLoader__.load({
       selfcheckHint: '开启后每轮结束都按思考链自检，未达成目标就继续做，直到通过',
       selfcheckNoWake: '自检已开启，但没能自动唤醒模型，发一句“自检”即可',
       selfcheckStarted: '自检已开始：模型正在按思考链逐条核对目标',
+      selfcheckLoop: '每轮结束自动继续 · 最多 40 轮',
+      selfcheckCounting: '条要求',
       newNode: '新节点',
       addHint: '加子节点',
       deleteHint: '删除这个块及其子树',
@@ -444,6 +448,17 @@ window.__ModuleLoader__.load({
 .dsh-tt-btn-passed{background:#1f7a45;color:#fff;border-color:#1f7a45;padding:5px 12px;font-weight:600}
 .dsh-tt-btn-passed:hover{background:#268a4f;color:#fff}
 @keyframes dsh-tt-breathe{0%,100%{opacity:1}50%{opacity:.55}}
+.dsh-tt-status{display:flex;align-items:center;gap:8px;padding:5px 12px;font-size:11px;font-variant-numeric:tabular-nums;border-bottom:1px solid var(--dsw-alias-border-l1);background:rgba(217,47,47,.10);color:#ff9c93;flex:none}
+.dsh-tt-status .dot{width:7px;height:7px;border-radius:50%;background:#e5484d;animation:dsh-tt-ping 1.4s ease-out infinite;flex:none}
+.dsh-tt-status .pct{margin-left:auto;opacity:.9}
+.dsh-tt-status .loop{opacity:.7;font-size:10.5px}
+.dsh-tt-status.on{animation:dsh-tt-flash .9s ease-out 1}
+.dsh-tt-status.passed{background:rgba(31,122,69,.15);color:#7ee2a4}
+.dsh-tt-status.passed .dot{animation:none;background:#38b26a}
+.dsh-tt-status.stopped{background:rgba(229,180,77,.12);color:#e8c37a}
+.dsh-tt-status.stopped .dot{animation:none;background:#d9a13a}
+@keyframes dsh-tt-ping{0%{box-shadow:0 0 0 0 rgba(229,72,77,.55)}70%{box-shadow:0 0 0 7px rgba(229,72,77,0)}100%{box-shadow:0 0 0 0 rgba(229,72,77,0)}}
+@keyframes dsh-tt-flash{0%{background:rgba(229,72,77,.45)}100%{background:rgba(217,47,47,.10)}}
 .dsh-tt-btn:disabled{opacity:.45;cursor:default}
 .dsh-tt-canvas{position:relative;flex:1;min-height:0;overflow:auto;cursor:grab;background:
   radial-gradient(circle at 1px 1px, var(--dsw-alias-border-l1) 1px, transparent 0) 0 0/18px 18px}
@@ -1356,6 +1371,17 @@ window.__ModuleLoader__.load({
             ? t('selfcheckStopped')
             : t('selfcheckOff')
       const selfcheckTone = selfcheck === 'on' ? 'running' : selfcheck === 'passed' ? 'passed' : 'plain'
+      const requirements = data === null ? [] : data.nodes.filter(node => node.depth === 1)
+      const requirementsDone = requirements.filter(node => node.status === 'done').length
+      // Re-key the strip whenever a round lands so the flash replays: that is the
+      // visible sign that the loop is still turning.
+      const roundSeen = React.useRef(0)
+      const [roundTick, setRoundTick] = React.useState(0)
+      React.useEffect(() => {
+        if (selfcheckRound === roundSeen.current) return
+        roundSeen.current = selfcheckRound
+        if (selfcheck === 'on') setRoundTick(value => value + 1)
+      }, [selfcheckRound, selfcheck])
       const toggleSelfCheck = async () => {
         if (sessionId === '') return
         setBusy(true)
@@ -1437,6 +1463,24 @@ window.__ModuleLoader__.load({
           h(Button, { label: '⟳', title: t('refresh'), onClick: () => void load(true) }),
         ),
         state.error !== null ? h('div', { className: 'dsh-tt-error' }, `${t('fail')}: ${state.error}`) : null,
+        selfcheck === ''
+          ? null
+          : h(
+            'div',
+            { className: `dsh-tt-status ${selfcheck}`, key: `status-${selfcheck}-${selfcheckRound}-${roundTick}` },
+            h('span', { className: 'dot' }),
+            h(
+              'span',
+              null,
+              selfcheck === 'on'
+                ? `${t('selfcheckOn')} · ${selfcheckRound}`
+                : selfcheck === 'passed'
+                  ? t('selfcheckPassed')
+                  : t('selfcheckStopped'),
+            ),
+            h('span', { className: 'pct' }, `${requirementsDone}/${requirements.length} ${t('selfcheckCounting')}`),
+            selfcheck === 'on' ? h('span', { className: 'loop' }, t('selfcheckLoop')) : null,
+          ),
         notice !== '' ? h('div', { className: 'dsh-tt-meta', style: { padding: '4px 12px' } }, notice) : null,
         sessionId === ''
           ? h('div', { className: 'dsh-tt-empty' }, h('strong', null, t('noSession')))

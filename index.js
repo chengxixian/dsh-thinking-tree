@@ -121,8 +121,48 @@ export const name = 'thinking-tree'
  * Register the skill provider and the file API.
  * @param ctx - Host context carrying the skill registry and the Connection route table.
  */
+/** Set once the standing prompt reminder is registered; reported through diagnostics. */
+let reminderRegistered = false
+
+/** The reminder that puts the chain back in front of the model on every step. */
+const REMINDER_TEXT = [
+  '【思考链 · 每轮都要看】',
+  '这个会话的思考链在 `thinking-tree/`（工作区里的一个文件夹，一个节点一个 md 文件）。',
+  '- 动手前：读 `00-goal.md`，再读第二层每一条「要求」；当前该推进的是唯一 `active` 那条链。',
+  '- 做完一步：立刻改对应节点的 `status` 和正文（一行结果 + 证据：文件路径、命令输出、接口返回）。',
+  '- 用户提了新要求：先在第二层加一个节点，再动手。',
+  '- 收尾前：状态写进文件，不要只放在记忆里——被压缩之后只剩磁盘上的东西。',
+  '- 自检：`00-goal.md` 的 `selfcheck: on` 时，每轮结束都会收到「开始自检 · 第 N 轮」，按 `thinking-tree-selfcheck` 技能执行。',
+].join('\n')
+
+/**
+ * Register the standing reminder in the system prompt, so the chain stays in the
+ * model's view every step instead of relying on it remembering to look.
+ * @param ctx - Host context.
+ */
+function registerPromptReminder(ctx) {
+  const systemPrompt = ctx.get('systemPrompt')
+  if (systemPrompt === undefined || systemPrompt === null || typeof systemPrompt.context !== 'function') return
+  ctx.effect(
+    () => {
+      const dispose = systemPrompt.context({ name: 'thinking-tree', order: 950, text: REMINDER_TEXT })
+      reminderRegistered = true
+      return () => {
+        reminderRegistered = false
+        dispose()
+      }
+    },
+    'thinking-tree: prompt reminder',
+  )
+}
+
+/**
+ * Register the skill provider and the file API.
+ * @param ctx - Host context carrying the skill registry and the Connection route table.
+ */
 export function apply(ctx) {
   ctx.effect(() => ctx.skills.registerProvider(() => skillProvider), 'thinking-tree: skill provider')
+  registerPromptReminder(ctx)
   ctx.effect(
     () => ctx.skills.registerProvider(() => makeSkillProvider(
       SELF_CHECK_SKILL_NAME,
@@ -275,10 +315,24 @@ const MAX_SELF_CHECK_ROUNDS = 40
  * @param {number} round - this round's number.
  * @returns the prompt text.
  */
-function selfCheckPrompt(goalTitle, round) {
+function selfCheckPrompt(goalTitle, round, pending) {
   // Kept short on purpose: this text is the user bubble the panel shows in the
   // conversation, so the procedure itself lives in the skill it names.
-  return [`开始自检 · 第 ${round} 轮`, `用 ${SELF_CHECK_SKILL_NAME} 技能执行。目标：${goalTitle || '（见 00-goal.md）'}`].join('\n')
+  const left = Number.isFinite(pending) && pending > 0 ? `（还有 ${pending} 条要求未完成）` : ''
+  return [`开始自检 · 第 ${round} 轮${left}`, `用 ${SELF_CHECK_SKILL_NAME} 技能执行。目标：${goalTitle || '（见 00-goal.md）'}`].join('\n')
+}
+
+/**
+ * Count the requirements that are not finished yet.
+ * @param shaped - result of `shapeTree`.
+ * @returns the number of depth-1 nodes whose status is not `done`.
+ */
+function countPending(shaped) {
+  let pending = 0
+  for (const node of shaped.nodes) {
+    if (node.depth === 1 && node.status !== 'done') pending += 1
+  }
+  return pending
 }
 
 /**
@@ -293,8 +347,8 @@ function selfCheckPrompt(goalTitle, round) {
  * @param round - self-check round number.
  * @returns `{ ok, error }`.
  */
-async function pokeSelfCheck(ctx, sessionId, goalTitle, round) {
-  const text = selfCheckPrompt(goalTitle, round)
+async function pokeSelfCheck(ctx, sessionId, goalTitle, round, pending) {
+  const text = selfCheckPrompt(goalTitle, round, pending)
   const controller = ctx.get('sessionController')
   if (controller !== undefined && controller !== null && typeof controller.prompt === 'function') {
     try {
@@ -356,7 +410,8 @@ async function serveSelfCheck(ctx, request) {
     let poked = false
     let pokeError = ''
     if (wanted === 'on') {
-      const result = await pokeSelfCheck(ctx, input.sessionId, goal.title, 1)
+      const pending = countPending(shaped)
+      const result = await pokeSelfCheck(ctx, input.sessionId, goal.title, 1, pending)
       poked = result.ok === true
       pokeError = result.error || ''
     }
@@ -395,7 +450,7 @@ async function selfCheckAfterTurn(ctx, payload) {
     text = writeField(text, 'selfcheck-round', round)
     text = writeField(text, 'updated', new Date().toISOString())
     await writeFile(path, text, 'utf8')
-    setTimeout(() => { void pokeSelfCheck(ctx, sessionId, goal.title, round) }, 600)
+    setTimeout(() => { void pokeSelfCheck(ctx, sessionId, goal.title, round, countPending(shaped)) }, 600)
   } catch {
     // The loop must never break a turn.
   }
@@ -999,6 +1054,7 @@ async function serveDiag(ctx, request) {
     } catch {
       payload = { raw: text }
     }
+    payload.reminder = reminderRegistered
     // Always attach the live Session list: it is how an outside observer can
     // tell which Session a window belongs to without guessing.
     try {
