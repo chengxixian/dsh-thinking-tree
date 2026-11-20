@@ -989,7 +989,7 @@ window.__ModuleLoader__.load({
      * @returns {object} React element.
      */
     function TreePanel(props) {
-      const { t } = props
+      const { t, ctx } = props
       const sessionId = props.sessionId || props.session?.id || props.session?.sessionId || ''
       const [state, setState] = React.useState({ loading: true, error: null, data: null })
       const [selected, setSelected] = React.useState(null)
@@ -1232,6 +1232,12 @@ window.__ModuleLoader__.load({
         if (data.signature === reported.current) return
         reported.current = data.signature
         const root = typeof document === 'undefined' ? null : document.querySelector('[data-dsh-thinking-tree="panel"]')
+        // How much of the viewport is left of the panel's left edge is the width
+        // the docked column actually gives it; the panel's own rect stays wide
+        // because its content overflows a zero-width wrapper.
+        const visibleWidth = root === null || typeof window === 'undefined'
+          ? null
+          : Math.round(window.innerWidth - root.getBoundingClientRect().left)
         const tiers = {}
         for (const box of map.boxes) tiers[box.depth] = (tiers[box.depth] || 0) + 1
         postDiag({
@@ -1241,6 +1247,7 @@ window.__ModuleLoader__.load({
           links: map.links.length,
           canvas: { w: Math.round(map.width), h: Math.round(map.height) },
           rootWidth: root === null ? null : Math.round(root.getBoundingClientRect().width),
+          visibleWidth,
           paneWidth: root === null || root.parentElement === null ? null : Math.round(root.parentElement.getBoundingClientRect().width),
           rootHeight: root === null ? null : Math.round(root.getBoundingClientRect().height),
           svgRects: root === null ? null : root.querySelectorAll('svg rect').length,
@@ -1250,6 +1257,16 @@ window.__ModuleLoader__.load({
           selfcheck: data.selfcheck || '',
           firstTitles: map.boxes.slice(0, 3).map(box => box.node.title),
         })
+        // A docked column narrower than a couple of hundred pixels cannot show a
+        // map at all; take the fullscreen presentation instead of a sliver.
+        if (visibleWidth !== null && visibleWidth < 220 && ctx !== undefined) {
+          try {
+            ctx.layout.openRightbar(true, true)
+            postDiag({ stage: 'escalated-on-mount', visibleWidth })
+          } catch {
+            /* keep the docked presentation */
+          }
+        }
       }, [data === null ? '' : data.signature])
       const selfcheck = data === null ? '' : (data.selfcheck || '')
       const selfcheckRound = data === null ? 0 : (data.selfcheckRound || 0)
