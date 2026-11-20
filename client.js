@@ -606,29 +606,6 @@ window.__ModuleLoader__.load({
      * @param {object} props - `{ ctx, t }`.
      * @returns {object} React element.
      */
-    function HeaderButton(props) {
-      const { ctx, t } = props
-      return h(
-        'button',
-        {
-          type: 'button',
-          className: 'dsh-tt-btn',
-          title: t('edgeLabel'),
-          'aria-label': t('edgeLabel'),
-          onClick: () => openPanel(ctx),
-          style: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 8px' },
-        },
-        h(
-          'svg',
-          { width: 13, height: 13, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
-          h('path', { d: 'M3 2.5v11', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
-          h('path', { d: 'M3 5.5h4a1.8 1.8 0 0 1 0 3.6H5a1.8 1.8 0 0 0 0 3.6h6', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
-          h('circle', { cx: 12, cy: 5.5, r: 1.5, fill: 'currentColor' }),
-        ),
-        t('tabTitle'),
-      )
-    }
-
     /**
      * Mount the button on the right edge of the window.
      *
@@ -730,7 +707,68 @@ window.__ModuleLoader__.load({
           /* nothing else to try */
         }
       }
-      button.addEventListener('click', click)
+
+      // The pill can be dragged up and down; the place it is dropped in is
+      // remembered, so it stays where the user wants it across reloads.
+      const STORE_KEY = 'dsh-thinking-tree.pillY'
+      const clampY = value => Math.max(24, Math.min(Math.max(24, window.innerHeight - 120), value))
+      const stored = Number.parseInt(window.localStorage.getItem(STORE_KEY) ?? '', 10)
+      let offsetY = Number.isFinite(stored) ? clampY(stored) : Math.round((window.innerHeight - 76) / 2)
+      const applyY = () => {
+        button.style.marginTop = `${offsetY}px`
+      }
+      host.style.alignItems = 'flex-start'
+      applyY()
+
+      let dragging = false
+      let moved = false
+      let startPointerY = 0
+      let startOffset = 0
+      const onPointerDown = (event) => {
+        if (event.button !== 0) return
+        dragging = true
+        moved = false
+        startPointerY = event.clientY
+        startOffset = offsetY
+        button.style.cursor = 'grabbing'
+        try {
+          button.setPointerCapture(event.pointerId)
+        } catch {
+          /* capture is a nicety */
+        }
+      }
+      const onPointerMove = (event) => {
+        if (!dragging) return
+        const delta = event.clientY - startPointerY
+        if (Math.abs(delta) > 3) moved = true
+        offsetY = clampY(startOffset + delta)
+        applyY()
+      }
+      const onPointerUp = (event) => {
+        if (!dragging) return
+        dragging = false
+        button.style.cursor = 'grab'
+        try {
+          button.releasePointerCapture(event.pointerId)
+        } catch {
+          /* nothing to release */
+        }
+        if (moved) {
+          try {
+            window.localStorage.setItem(STORE_KEY, String(offsetY))
+          } catch {
+            /* a blocked storage still leaves the pill where it was dragged */
+          }
+          return
+        }
+        click()
+      }
+      button.style.cursor = 'grab'
+      button.style.touchAction = 'none'
+      button.addEventListener('pointerdown', onPointerDown)
+      button.addEventListener('pointermove', onPointerMove)
+      button.addEventListener('pointerup', onPointerUp)
+      button.addEventListener('pointercancel', onPointerUp)
 
       host.appendChild(button)
       document.body.appendChild(sheet)
@@ -761,7 +799,10 @@ window.__ModuleLoader__.load({
         /* diagnostics must never break mounting */
       }
       return () => {
-        button.removeEventListener('click', click)
+        button.removeEventListener('pointerdown', onPointerDown)
+        button.removeEventListener('pointermove', onPointerMove)
+        button.removeEventListener('pointerup', onPointerUp)
+        button.removeEventListener('pointercancel', onPointerUp)
         host.remove()
         sheet.remove()
       }
@@ -1250,6 +1291,7 @@ window.__ModuleLoader__.load({
         for (const box of map.boxes) tiers[box.depth] = (tiers[box.depth] || 0) + 1
         postDiag({
           stage: 'panel',
+          sessionId,
           nodes: data.nodes.length,
           boxes: map.boxes.length,
           links: map.links.length,
@@ -1610,13 +1652,6 @@ window.__ModuleLoader__.load({
         )), 'thinking-tree: panel body')
 
         ctx.effect(() => mountEdgeButton(ctx, t), 'thinking-tree: edge button')
-
-        // A second, guaranteed-painted entry point: the shell always draws this
-        // header seat, while a body-level fixed layer can end up behind a column.
-        ctx.effect(() => ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register(
-          { name: 'conversation.session.header.utilities', id: 'thinking-tree-header', order: 20 },
-          () => h(HeaderButton, { ctx, t }),
-        )), 'thinking-tree: header button')
       },
     }
   },
