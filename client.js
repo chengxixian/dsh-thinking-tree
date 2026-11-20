@@ -493,6 +493,7 @@ window.__ModuleLoader__.load({
   radial-gradient(circle at 1px 1px, var(--dsw-alias-border-l1) 1px, transparent 0) 0 0/18px 18px}
 .dsh-tt-canvas.dragging{cursor:grabbing}
 .dsh-tt-canvas svg{display:block;user-select:none}
+.dsh-tt-zoom{position:relative;transform-origin:0 0;will-change:transform}
 .dsh-tt-node{cursor:pointer}
 .dsh-tt-node:hover .dsh-tt-node-bg{filter:brightness(1.12)}
 .dsh-tt-acts{opacity:0;transition:opacity .12s}
@@ -1155,7 +1156,10 @@ window.__ModuleLoader__.load({
 
       return h(
         'svg',
-        { width: width * zoom, height: height * zoom, viewBox: `0 0 ${width} ${height}`, role: 'img' },
+        // Fixed pixel size; zooming scales the wrapper instead. Rewriting these
+        // attributes per wheel tick re-laid-out every node and made the map
+        // flicker while scrolling.
+        { width, height, viewBox: `0 0 ${width} ${height}`, role: 'img' },
         h('g', null, links.map(link => h('path', {
           key: link.key,
           d: link.d,
@@ -1234,6 +1238,11 @@ window.__ModuleLoader__.load({
       const selectedRef = React.useRef(null)
       selectedRef.current = selected
       const canvasRef = React.useRef(null)
+      const zoomLayerRef = React.useRef(null)
+      // Wheel zoom writes the transform directly and only syncs React later, so
+      // a fast scroll does not re-render the whole SVG on every tick.
+      const interactingUntil = React.useRef(0)
+      const mapSize = React.useRef({ w: 0, h: 0 })
 
       const load = React.useCallback(async (force) => {
         if (sessionId === '') {
@@ -1256,6 +1265,9 @@ window.__ModuleLoader__.load({
           if (typeof document !== 'undefined' && document.hidden) return
           // A dirty draft must not be replaced under the user's cursor.
           if (selectedRef.current !== null) return
+          // Never refresh mid-gesture: it re-renders under the pointer and reads
+          // as a stutter while zooming or panning.
+          if (Date.now() < interactingUntil.current) return
           void load(false)
         }, POLL_MS)
         return () => clearInterval(timer)
@@ -1315,6 +1327,7 @@ window.__ModuleLoader__.load({
       const beginNodeDrag = (name, event) => {
         const box = map.boxes.find(entry => entry.node.name === name)
         if (box === undefined) return
+        interactingUntil.current = Date.now() + 600
         dragged.current = false
         nodeDrag.current = { name, startX: event.clientX, startY: event.clientY, originX: box.x, originY: box.y }
         setMoved(previous => ({ ...previous, [name]: { x: box.x, y: box.y } }))
@@ -1415,6 +1428,8 @@ window.__ModuleLoader__.load({
       const onPointerDown = (event) => {
         const canvas = canvasRef.current
         if (canvas === null || (event.button !== 0 && event.button !== 1)) return
+        // Keep the poll from re-rendering while the user is panning.
+        interactingUntil.current = Date.now() + 600
         if (event.button === 1) event.preventDefault()
         drag.current = { active: true, x: event.clientX, y: event.clientY, left: canvas.scrollLeft, top: canvas.scrollTop }
         canvas.classList.add('dragging')
@@ -1533,30 +1548,57 @@ window.__ModuleLoader__.load({
       // so the node under the cursor stays under the cursor.
       const zoomRef = React.useRef(zoom)
       zoomRef.current = zoom
+      mapSize.current = { w: map.width, h: map.height }
       React.useEffect(() => {
         const canvas = canvasRef.current
         if (canvas === null) return undefined
+        let pending = 0
+        let frame = 0
+        let syncTimer = 0
+        const pointer = { x: 0, y: 0 }
         const onWheel = (event) => {
           event.preventDefault()
-          const current = zoomRef.current
-          const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12
-          const next = Math.min(2.2, Math.max(0.35, Number((current * factor).toFixed(3))))
-          if (next === current) return
-          const rect = canvas.getBoundingClientRect()
-          const anchorX = event.clientX - rect.left
-          const anchorY = event.clientY - rect.top
-          const worldX = (canvas.scrollLeft + anchorX) / current
-          const worldY = (canvas.scrollTop + anchorY) / current
-          setZoom(next)
-          requestAnimationFrame(() => {
+          // Hold the poll off while the gesture lasts.
+          interactingUntil.current = Date.now() + 600
+          pointer.x = event.clientX
+          pointer.y = event.clientY
+          pending += event.deltaY
+          if (frame !== 0) return
+          frame = requestAnimationFrame(() => {
+            frame = 0
             const live = canvasRef.current
-            if (live === null) return
+            const layer = zoomLayerRef.current
+            const delta = pending
+            pending = 0
+            if (live === null || layer === null || delta === 0) return
+            const current = zoomRef.current
+            const step = delta < 0 ? 1.12 : 1 / 1.12
+            const next = Math.min(2.2, Math.max(0.35, Number((current * step).toFixed(3))))
+            if (next === current) return
+            const rect = live.getBoundingClientRect()
+            const anchorX = pointer.x - rect.left
+            const anchorY = pointer.y - rect.top
+            const worldX = (live.scrollLeft + anchorX) / current
+            const worldY = (live.scrollTop + anchorY) / current
+            zoomRef.current = next
+            const size = mapSize.current
+            // Size and scale change together, inside one frame: splitting them
+            // across a React render and a scroll fix-up is what made it flicker.
+            layer.style.transform = `scale(${next})`
+            layer.style.width = `${size.w * next}px`
+            layer.style.height = `${size.h * next}px`
             live.scrollLeft = worldX * next - anchorX
             live.scrollTop = worldY * next - anchorY
+            if (syncTimer !== 0) clearTimeout(syncTimer)
+            syncTimer = setTimeout(() => { setZoom(next) }, 180)
           })
         }
         canvas.addEventListener('wheel', onWheel, { passive: false })
-        return () => canvas.removeEventListener('wheel', onWheel)
+        return () => {
+          canvas.removeEventListener('wheel', onWheel)
+          if (frame !== 0) cancelAnimationFrame(frame)
+          if (syncTimer !== 0) clearTimeout(syncTimer)
+        }
       }, [showEmpty, sessionId])
 
       return h(
@@ -1656,30 +1698,44 @@ window.__ModuleLoader__.load({
               },
               state.loading && data === null
                 ? h('div', { className: 'dsh-tt-empty' }, t('loading'))
-                : h(MindMap, {
-                  boxes: map.boxes,
-                  links: map.links,
-                  width: map.width,
-                  height: map.height,
-                  zoom,
-                  selected,
-                  // Selection is handled on pointer release (see onUp), so the
-                  // click only stops here instead of toggling a second time.
-                  onSelect: (name) => {
-                    if (dragged.current) {
-                      dragged.current = false
-                      return
-                    }
-                    setSelected(current => (current === name ? null : name))
+                : h(
+                  'div',
+                  {
+                    className: 'dsh-tt-zoom',
+                    ref: zoomLayerRef,
+                    style: {
+                      width: map.width * zoom,
+                      height: map.height * zoom,
+                      transform: `scale(${zoom})`,
+                      transformOrigin: '0 0',
+                      willChange: 'transform',
+                    },
                   },
-                  onStatus: cycleStatus,
-                  onToggleExpand: toggleExpanded,
-                  onNodeDragStart: beginNodeDrag,
-                  onAddChild: addChild,
-                  onDelete: armDelete,
-                  deleteArmed,
-                  t,
-                }),
+                  h(MindMap, {
+                    boxes: map.boxes,
+                    links: map.links,
+                    width: map.width,
+                    height: map.height,
+                    zoom: 1,
+                    selected,
+                    // Selection is handled on pointer release (see onUp), so the
+                    // click only stops here instead of toggling a second time.
+                    onSelect: (name) => {
+                      if (dragged.current) {
+                        dragged.current = false
+                        return
+                      }
+                      setSelected(current => (current === name ? null : name))
+                    },
+                    onStatus: cycleStatus,
+                    onToggleExpand: toggleExpanded,
+                    onNodeDragStart: beginNodeDrag,
+                    onAddChild: addChild,
+                    onDelete: armDelete,
+                    deleteArmed,
+                    t,
+                  }),
+                ),
             ),
         selectedNode === undefined
           ? null
