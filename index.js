@@ -1071,7 +1071,20 @@ async function serveDiag(ctx, request) {
     } catch (error) {
       payload.sessionsError = String(error?.message ?? error)
     }
-    await writeFile(path, JSON.stringify(payload), 'utf8')
+    // Merge instead of replacing: several self-reports arrive close together and
+      // the last writer would otherwise hide the others.
+      let merged = payload
+      try {
+        const previous = JSON.parse(await readFile(path, 'utf8'))
+        merged = { ...previous, ...payload }
+        // Keep one slot per report stage so nothing is lost to write order.
+        const reports = { ...(previous.reports ?? {}) }
+        if (typeof payload.stage === 'string') reports[payload.stage] = payload
+        merged.reports = reports
+      } catch {
+        merged = { ...payload, reports: typeof payload.stage === 'string' ? { [payload.stage]: payload } : {} }
+      }
+      await writeFile(path, JSON.stringify(merged), 'utf8')
     return json({ ok: true, path })
   } catch (error) {
     return json({ ok: false, error: 'diag-failed', message: String(error?.message ?? error) }, 500)

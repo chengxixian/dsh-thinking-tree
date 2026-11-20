@@ -616,11 +616,60 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Set once the panel has exercised its own interactions and reported them. */
+    let drawerSelfTested = false
+
     /**
-     * The in-header entry point: a normal slot button the shell always paints.
-     * @param {object} props - `{ ctx, t }`.
-     * @returns {object} React element.
+     * Dispatch real mouse events at a node and check that the editor opens.
+     *
+     * This exists because "the click handler looks right" is not evidence. The
+     * test drives the same handlers a person does, then reports the DOM result.
      */
+    function selfTestDrawer() {
+      if (drawerSelfTested) return
+      const node = document.querySelector('[data-dsh-thinking-tree="panel"] .dsh-tt-node')
+      if (node === null) return
+      drawerSelfTested = true
+      const box = node.getBoundingClientRect()
+      const point = { clientX: box.left + box.width / 2, clientY: box.top + box.height / 2, button: 0, bubbles: true }
+      try {
+        node.dispatchEvent(new MouseEvent('mousedown', point))
+        window.dispatchEvent(new MouseEvent('mouseup', point))
+      } catch (error) {
+        postDiag({ stage: 'selftest-drawer', error: String(error?.message ?? error) })
+        return
+      }
+      window.setTimeout(() => {
+        const drawer = document.querySelector('[data-dsh-thinking-tree="panel"] .dsh-tt-drawer')
+        const title = drawer === null ? '' : (drawer.querySelector('.dsh-tt-drawer-title')?.textContent ?? '')
+        const file = drawer === null ? '' : (drawer.querySelector('.dsh-tt-drawer-file')?.textContent ?? '')
+        postDiag({ stage: 'selftest-drawer', opened: drawer !== null, title, file })
+        // Report the self-check strip's real computed look, so "it renders" is a
+        // measurement instead of an assumption.
+        const strip = document.querySelector('[data-dsh-thinking-tree="panel"] .dsh-tt-status')
+        if (strip === null) {
+          postDiag({ stage: 'selftest-strip', present: false })
+        } else {
+          const computed = window.getComputedStyle(strip)
+          const dot = strip.querySelector('.dot')
+          postDiag({
+            stage: 'selftest-strip',
+            present: true,
+            text: (strip.textContent || '').replace(/\s+/g, ' ').trim(),
+            className: strip.className,
+            background: computed.backgroundColor,
+            color: computed.color,
+            dotAnimation: dot === null ? '' : window.getComputedStyle(dot).animationName,
+            visible: strip.getBoundingClientRect().height > 8,
+          })
+        }
+        if (drawer !== null) {
+          const close = drawer.querySelector('.dsh-tt-btn')
+          if (close !== null) close.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        }
+      }, 120)
+    }
+
     /**
      * Mount the button on the right edge of the window.
      *
@@ -632,6 +681,9 @@ window.__ModuleLoader__.load({
      * @param {Function} t - translator.
      * @returns {Function} cleanup that removes the widget.
      */
+    /** Set once the pill has exercised its own drag and reported the result. */
+    let pillSelfTested = false
+
     function mountEdgeButton(ctx, t) {
       if (typeof document === 'undefined') return () => undefined
       let dispose = () => undefined
@@ -780,6 +832,33 @@ window.__ModuleLoader__.load({
       }
       button.style.cursor = 'grab'
       button.style.touchAction = 'none'
+      // Drive the drag handlers with synthetic pointer events and report the
+      // result: a handler that merely looks correct is not evidence.
+      if (!pillSelfTested) {
+        pillSelfTested = true
+        window.setTimeout(() => {
+          const before = Number.parseFloat(button.style.marginTop || '0')
+          try {
+            button.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, button: 0, clientY: 200, bubbles: true }))
+            button.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, button: 0, clientY: 260, bubbles: true }))
+            button.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, button: 0, clientY: 260, bubbles: true }))
+          } catch (error) {
+            postDiag({ stage: 'selftest-pill', error: String(error?.message ?? error) })
+            return
+          }
+          const after = Number.parseFloat(button.style.marginTop || '0')
+          const stored = window.localStorage.getItem('dsh-thinking-tree.pillY')
+          postDiag({ stage: 'selftest-pill', before, after, moved: Math.abs(after - before) > 40, stored })
+          // Put it back where the user had it; the test must not move the pill.
+          button.style.marginTop = `${before}px`
+          offsetY = before
+          try {
+            window.localStorage.setItem('dsh-thinking-tree.pillY', String(before))
+          } catch {
+            /* nothing to restore */
+          }
+        }, 600)
+      }
       button.addEventListener('pointerdown', onPointerDown)
       button.addEventListener('pointermove', onPointerMove)
       button.addEventListener('pointerup', onPointerUp)
@@ -1361,6 +1440,13 @@ window.__ModuleLoader__.load({
           }
         }
       }, [data === null ? '' : data.signature])
+      // Exercise the click-to-edit path once, so the report says whether the
+      // editor actually opens rather than whether its handler looks right.
+      React.useEffect(() => {
+        if (data === null || data.nodes.length === 0) return
+        const timer = window.setTimeout(() => selfTestDrawer(), 500)
+        return () => window.clearTimeout(timer)
+      }, [data === null ? '' : data.signature])
       const selfcheck = data === null ? '' : (data.selfcheck || '')
       const selfcheckRound = data === null ? 0 : (data.selfcheckRound || 0)
       const selfcheckLabel = selfcheck === 'on'
@@ -1473,12 +1559,12 @@ window.__ModuleLoader__.load({
               'span',
               null,
               selfcheck === 'on'
-                ? `${t('selfcheckOn')} · ${selfcheckRound}`
+                ? `${t('selfcheckOn')} · 第 ${selfcheckRound} 轮`
                 : selfcheck === 'passed'
                   ? t('selfcheckPassed')
                   : t('selfcheckStopped'),
             ),
-            h('span', { className: 'pct' }, `${requirementsDone}/${requirements.length} ${t('selfcheckCounting')}`),
+            h('span', { className: 'pct' }, `· ${requirementsDone}/${requirements.length} ${t('selfcheckCounting')}`),
             selfcheck === 'on' ? h('span', { className: 'loop' }, t('selfcheckLoop')) : null,
           ),
         notice !== '' ? h('div', { className: 'dsh-tt-meta', style: { padding: '4px 12px' } }, notice) : null,
