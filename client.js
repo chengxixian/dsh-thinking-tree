@@ -531,22 +531,61 @@ window.__ModuleLoader__.load({
 
     /**
      * Open the panel from wherever the caller sits.
+     *
+     * A mind map needs width, and the docked column remembers whatever width it
+     * had last time — which can be a 30px sliver that reads as a blank column. So
+     * after opening, the panel measures itself and escalates to the fullscreen
+     * presentation when the column is too narrow to show anything.
      * @param {object} ctx - client plugin context.
      */
     function openPanel(ctx) {
       const sidebar = typeof ctx.get === 'function' ? ctx.get('sidebarRight') : ctx.sidebarRight
+      let opened = false
       try {
         if (sidebar !== undefined && sidebar !== null && typeof sidebar.openTab === 'function') {
           sidebar.openTab(TAB_KIND)
-          return
+          opened = true
         }
       } catch {
         /* fall through */
       }
+      if (!opened) {
+        try {
+          ctx.layout.openRightbar(true, false)
+          return
+        } catch {
+          /* nothing else to try */
+        }
+      }
+      const escalate = () => {
+        if (typeof document === 'undefined') return
+        const root = document.querySelector('[data-dsh-thinking-tree="panel"]')
+        if (root === null) return
+        const width = root.getBoundingClientRect().width
+        if (width >= 320) return
+        try {
+          ctx.layout.openRightbar(true, true)
+          postDiag({ stage: 'escalated', measured: Math.round(width) })
+        } catch {
+          /* keep the docked presentation */
+        }
+      }
+      if (typeof window !== 'undefined') setTimeout(escalate, 300)
+    }
+
+    /**
+     * Report one client-side observation to the Host's temp file.
+     * @param {object} payload - JSON-safe snapshot.
+     */
+    function postDiag(payload) {
       try {
-        ctx.layout.openRightbar(true, false)
+        void fetch(new URL(`${API}/diag`, document.baseURI), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ at: new Date().toISOString(), ...payload }),
+        }).catch(() => undefined)
       } catch {
-        /* nothing else to try */
+        /* diagnostics never break behaviour */
       }
     }
 
