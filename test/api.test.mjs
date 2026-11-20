@@ -21,7 +21,7 @@ const sessionId = 'session-test'
 const prompts = []
 const ctx = {
   get(name) {
-    if (name === 'sessions') return { get: id => (id === sessionId ? { header: { cwd: root } } : undefined) }
+    if (name === 'sessions') return { get: id => (id === sessionId || id === 'session-other' ? { id, header: { cwd: root } } : undefined) }
     if (name === 'sessionController') {
       return {
         prompt: async request => {
@@ -69,6 +69,26 @@ let childName
     roots: shaped.roots.length,
     children: shaped.roots[0]?.children.length,
   })
+}
+
+// Two conversations in one workspace must not share a chain.
+{
+  const other = 'session-other'
+  const otherBefore = await once(serveTree, new Request(`${base}/tree?sessionId=${other}`))
+  const mine = await once(serveTree, new Request(`${base}/tree?sessionId=${sessionId}`))
+  check('another conversation starts with its own empty chain', otherBefore.body.ok === true && otherBefore.body.nodes.length === 0, {
+    nodes: otherBefore.body.nodes.length,
+  })
+  check('the owning conversation still sees its chain', mine.body.nodes.length === 2, { nodes: mine.body.nodes.length })
+  const created = await once(serveCreate, post('create', { sessionId: other, parent: '', title: '另一个对话的目标' }))
+  const otherAfter = await once(serveTree, new Request(`${base}/tree?sessionId=${other}`))
+  const mineAfter = await once(serveTree, new Request(`${base}/tree?sessionId=${sessionId}`))
+  check('each conversation only sees its own nodes',
+    otherAfter.body.nodes.length === 1 && otherAfter.body.nodes[0].name === created.body.name &&
+      mineAfter.body.nodes.length === 2 && !mineAfter.body.nodes.some(node => node.name === created.body.name), {
+      other: otherAfter.body.nodes.length,
+      mine: mineAfter.body.nodes.length,
+    })
 }
 
 {

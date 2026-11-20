@@ -292,8 +292,7 @@ async function serveSelfCheck(ctx, request) {
   const folder = folderOf(ctx, input.sessionId)
   if (folder.error !== undefined) return json({ ok: false, ...folder }, 400)
   try {
-    const tree = await readTree(folder.dir)
-    const shaped = shapeTree(tree.nodes)
+    const { shaped } = await readScopedTree(folder, input.sessionId)
     const goal = shaped.roots[0]
     if (goal === undefined) return json({ ok: false, error: 'no-goal', message: 'create the goal node first' }, 400)
     // `off` means "stop asking", never "passed": only the agent's own verdict
@@ -337,7 +336,7 @@ async function selfCheckAfterTurn(ctx, payload) {
     if (typeof root !== 'string' || typeof sessionId !== 'string') return
     const tree = await readTree(join(root, FOLDER))
     if (!tree.exists) return
-    const shaped = shapeTree(tree.nodes)
+    const { shaped } = await readScopedTree({ dir: join(root, FOLDER) }, sessionId)
     const goal = shaped.roots[0]
     if (goal === undefined || goal.selfcheck !== 'on') return
     const round = Number(goal.selfcheckRound ?? 0) + 1
@@ -511,6 +510,7 @@ async function readTree(dir) {
       title: (typeof data.title === 'string' && data.title !== '' ? data.title : firstHeading(body) || fallback),
       status: STATUSES.includes(data.status) ? data.status : 'pending',
       body: body.trimStart(),
+      session: typeof data.session === 'string' ? data.session : '',
       model: typeof data.model === 'string' ? data.model : '',
       selfcheck: typeof data.selfcheck === 'string' ? data.selfcheck : '',
       selfcheckRound: Number.isFinite(Number(data['selfcheck-round'])) ? Number(data['selfcheck-round']) : 0,
@@ -549,24 +549,73 @@ function shapeTree(nodes) {
     else parent.children.push(node)
   }
   const compare = (a, b) => (a.order === b.order ? a.name.localeCompare(b.name) : a.order - b.order)
-  const visit = (node, depth, seen) => {
+  const visit = (node, depth, seen, inherited) => {
     if (seen.has(node.id)) return
     seen.add(node.id)
     node.depth = depth
+    // A node without its own session belongs to whichever root owns the chain.
+    node.session = node.session || inherited
     node.children.sort(compare)
-    for (const child of node.children) visit(child, depth + 1, seen)
+    for (const child of node.children) visit(child, depth + 1, seen, node.session)
   }
   const seen = new Set()
   roots.sort(compare)
-  for (const root of roots) visit(root, 0, seen)
+  for (const root of roots) visit(root, 0, seen, '')
   // A cycle leaves nodes unreached; show them as extra roots instead of losing them.
   for (const node of nodes) {
     if (seen.has(node.id)) continue
     node.depth = 0
     roots.push(node)
-    visit(node, 0, seen)
+    visit(node, 0, seen, '')
   }
   return { nodes, roots }
+}
+
+/**
+ * A filesystem- and front-matter-safe handle for one Session's tree.
+ * @param sessionId - Session identity.
+ * @returns a short stable key.
+ */
+function sessionKey(sessionId) {
+  return String(sessionId ?? '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 20) || 'unknown'
+}
+
+/**
+ * Read the tree that belongs to one Session.
+ *
+ * The folder is shared, so a root node records which Session owns its chain and
+ * every descendant inherits that. Roots written before this existed are adopted
+ * by the first Session that opens them, so an old tree keeps working.
+ * @param folder - resolved workspace folder.
+ * @param sessionId - Session identity.
+ * @returns `{ tree, shaped }` scoped to the Session.
+ */
+async function readScopedTree(folder, sessionId) {
+  const key = sessionKey(sessionId)
+  const tree = await readTree(folder.dir)
+  const all = shapeTree(tree.nodes)
+  let adopted = false
+  for (const root of all.roots) {
+    if (root.session !== '') continue
+    root.session = key
+    adopted = true
+    try {
+      const path = join(folder.dir, root.name)
+      let text = await readFile(path, 'utf8')
+      text = writeField(text, 'session', key)
+      await writeFile(path, text, 'utf8')
+    } catch {
+      // Adoption is best effort; the in-memory value still scopes this response.
+    }
+  }
+  const keep = new Set()
+  const walk = node => {
+    keep.add(node.id)
+    for (const child of node.children) walk(child)
+  }
+  for (const root of all.roots) if (root.session === key) walk(root)
+  const nodes = tree.nodes.filter(node => keep.has(node.id))
+  return { tree: { exists: tree.exists, signature: adopted ? `${tree.signature}-adopted` : tree.signature, nodes }, shaped: shapeTree(nodes) }
 }
 
 /* ------------------------------------------------------------------ *
@@ -618,8 +667,7 @@ async function serveTree(ctx, request) {
   const folder = folderOf(ctx, sessionId)
   if (folder.error !== undefined) return json({ ok: false, ...folder }, 400)
   try {
-    const tree = await readTree(folder.dir)
-    const shaped = shapeTree(tree.nodes)
+    const { tree, shaped } = await readScopedTree(folder, sessionId)
     return json({
       ok: true,
       folder: FOLDER,
@@ -735,6 +783,8 @@ async function serveCreate(ctx, request) {
       `parent: ${quote(parent)}`,
       `order: ${order}`,
       `title: ${quote(title)}`,
+      // A new root claims the chain for this Session; children inherit it.
+      ...(parent === '' ? [`session: ${quote(sessionKey(input.sessionId))}`] : []),
       'status: pending',
       'level: ' + (depth === 0 ? 'goal' : 'step'),
       `updated: ${new Date().toISOString()}`,
