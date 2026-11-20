@@ -68,7 +68,12 @@ window.__ModuleLoader__.load({
       zoomIn: 'Zoom in',
       zoomOut: 'Zoom out',
       fit: 'Fit',
-      hint: 'Click a node to edit its Markdown',
+      hint: 'Click a node to edit it · right-drag a node to move it · wheel to zoom',
+      nodeTitle: 'Title',
+      expandText: 'Show the whole text',
+      collapseText: 'Collapse',
+      arrange: 'Auto layout',
+      moved: 'Moved',
     }
 
     const ZH = {
@@ -104,7 +109,12 @@ window.__ModuleLoader__.load({
       zoomIn: '放大',
       zoomOut: '缩小',
       fit: '适应',
-      hint: '点节点编辑它的 Markdown',
+      hint: '点节点改 · 右键长按拖动块 · 滚轮缩放',
+      nodeTitle: '标题',
+      expandText: '展开全文',
+      collapseText: '收起',
+      arrange: '自动排列',
+      moved: '已移动',
     }
 
     /* ---------------------------------------------------------------- *
@@ -189,32 +199,38 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Wrap a title into at most two lines inside a pixel budget.
-     * @param {string} title - node title.
+     * Wrap text into at most `maxLines` lines inside a pixel budget.
+     * @param {string} text - source text.
+     * @param {number} size - font size in pixels.
      * @param {number} budget - text budget in pixels.
-     * @returns {Array<string>} one or two lines.
+     * @param {number} maxLines - hard cap on lines.
+     * @returns {object} the lines, and whether anything was dropped.
      */
-    function wrapTitle(title, budget) {
-      const text = String(title || '')
-      if (measure(text, 13) <= budget) return [text]
+    function wrapText(text, size, budget, maxLines) {
+      const source = String(text || '')
+      if (measure(source, size) <= budget) return { lines: [source], truncated: false }
       const lines = []
       let current = ''
       let width = 0
-      for (const ch of text) {
-        const next = advance(ch, 13)
+      for (const ch of source) {
+        const next = advance(ch, size)
         if (width + next > budget && current !== '') {
           lines.push(current)
           current = ''
           width = 0
-          if (lines.length === 2) break
+          if (lines.length === maxLines) break
         }
         current += ch
         width += next
       }
-      if (lines.length < 2 && current !== '') lines.push(current)
+      if (lines.length < maxLines && current !== '') lines.push(current)
       const consumed = lines.join('')
-      if (consumed.length < text.length) lines[1] = ellipsize(`${lines[1] ?? ''}${text.slice(consumed.length)}`, 13, budget)
-      return lines.length === 0 ? [''] : lines
+      if (consumed.length < source.length) {
+        // Show the cut explicitly, and let the node say it can be expanded.
+        lines[lines.length - 1] = ellipsize(`${lines[lines.length - 1] ?? ''}${source.slice(consumed.length)}`, size, budget)
+        return { lines: lines.length === 0 ? [''] : lines, truncated: true }
+      }
+      return { lines: lines.length === 0 ? [''] : lines, truncated: false }
     }
 
     /**
@@ -235,23 +251,47 @@ window.__ModuleLoader__.load({
     /**
      * Lay a tree out as a left-to-right mind map.
      * @param {Array} roots - nodes with `childNodes`.
+     * @param {Set} expanded - node names whose text is shown in full.
      * @returns {object} boxes, links, and the canvas size.
      */
-    function layoutMindMap(roots) {
+    function layoutMindMap(roots, expanded, moved) {
       const boxes = new Map()
       const order = []
+      const open = expanded instanceof Set ? expanded : new Set()
+      const pins = moved !== null && typeof moved === 'object' ? moved : {}
 
       const measureNode = (node, depth) => {
-        const size = depth === 0 ? 13.5 : depth === 1 ? 12.5 : 11.8
+        const size = depth === 0 ? 13.5 : depth === 1 ? 12.8 : depth === 2 ? 12.2 : 11.6
+        const isOpen = open.has(node.name)
         const budget = GEO.maxW - GEO.padX * 2
         const titleBudget = depth === 0 ? budget - 8 : budget
-        const lines = wrapTitle(node.title || node.name, titleBudget)
-        const subtitle = depth < 2 ? subtitleOf(node.body) : ''
-        const titleWidth = Math.max(...lines.map(line => measure(line, size)))
-        const subWidth = subtitle === '' ? 0 : measure(subtitle, 10.5)
-        const width = Math.min(GEO.maxW, Math.max(GEO.minW, Math.max(titleWidth, Math.min(subWidth, budget)) + GEO.padX * 2))
-        const height = GEO.padY * 2 + lines.length * GEO.line + (subtitle === '' ? 0 : GEO.subLine)
-        const box = { node, depth, size, lines, subtitle, width, height, x: 0, y: 0 }
+        const title = wrapText(node.title || node.name, size, titleBudget, isOpen ? 8 : 2)
+        const rawSubtitle = depth <= 1 ? subtitleOf(node.body) : ''
+        const sub = rawSubtitle === ''
+          ? { lines: [], truncated: false }
+          : wrapText(rawSubtitle, 10.5, budget, isOpen ? 4 : 1)
+        const titleWidth = Math.max(...title.lines.map(line => measure(line, size)))
+        const subWidth = sub.lines.length === 0 ? 0 : Math.max(...sub.lines.map(line => measure(line, 10.5)))
+        const width = Math.min(GEO.maxW, Math.max(GEO.minW, Math.max(titleWidth, subWidth) + GEO.padX * 2))
+        const toggle = title.truncated || sub.truncated || isOpen
+        const height = GEO.padY * 2
+          + title.lines.length * GEO.line
+          + sub.lines.length * GEO.subLine
+          + (toggle ? 13 : 0)
+        const box = {
+          node,
+          depth,
+          size,
+          lines: title.lines,
+          subLines: sub.lines,
+          subtitle: rawSubtitle,
+          toggle,
+          open: isOpen,
+          width,
+          height,
+          x: 0,
+          y: 0,
+        }
         boxes.set(node.name, box)
         order.push(box)
         for (const child of node.childNodes || []) measureNode(child, depth + 1)
@@ -287,6 +327,23 @@ window.__ModuleLoader__.load({
         return box.y
       }
       for (const root of roots) place(root)
+
+      // A dragged or previously pinned node keeps its own coordinates; every
+      // other node stays wherever the automatic layout put it.
+      for (const box of order) {
+        const override = pins[box.node.name]
+        if (override !== undefined && Number.isFinite(override.x) && Number.isFinite(override.y)) {
+          box.pinned = true
+          box.x = Math.max(0, override.x)
+          box.y = Math.max(0, override.y)
+          continue
+        }
+        if (Number.isFinite(box.node.x) && Number.isFinite(box.node.y)) {
+          box.pinned = true
+          box.x = Math.max(0, box.node.x)
+          box.y = Math.max(0, box.node.y)
+        }
+      }
 
       const links = []
       const link = (node) => {
@@ -335,7 +392,7 @@ window.__ModuleLoader__.load({
 .dsh-tt-canvas{position:relative;flex:1;min-height:0;overflow:auto;cursor:grab;background:
   radial-gradient(circle at 1px 1px, var(--dsw-alias-border-l1) 1px, transparent 0) 0 0/18px 18px}
 .dsh-tt-canvas.dragging{cursor:grabbing}
-.dsh-tt-canvas svg{display:block}
+.dsh-tt-canvas svg{display:block;user-select:none}
 .dsh-tt-node{cursor:pointer}
 .dsh-tt-node:hover .dsh-tt-node-bg{filter:brightness(1.12)}
 .dsh-tt-empty{display:flex;flex-direction:column;gap:8px;padding:16px 14px;color:var(--dsw-alias-label-secondary);align-items:flex-start}
@@ -499,17 +556,25 @@ window.__ModuleLoader__.load({
      * @returns {object} React element.
      */
     function MindMap(props) {
-      const { boxes, links, width, height, zoom, selected, onSelect, onStatus } = props
+      const { boxes, links, width, height, zoom, selected, onSelect, onStatus, onToggleExpand, onNodeDragStart } = props
       const nodes = []
       for (const box of boxes) {
         const isGoal = box.depth === 0
-        const isApproach = box.depth === 1
-        const fill = isGoal ? 'var(--dsw-alias-bg-layer-2)' : isApproach ? 'var(--dsw-alias-bg-layer-1)' : 'var(--dsw-alias-bg-base)'
+        const isRequirement = box.depth === 1
+        const isRoute = box.depth === 2
+        const fill = isGoal
+          ? 'var(--dsw-alias-bg-layer-2)'
+          : isRequirement
+            ? 'var(--dsw-alias-bg-layer-1)'
+            : isRoute
+              ? 'var(--dsw-alias-bg-layer-1)'
+              : 'var(--dsw-alias-bg-base)'
         const stroke = box.node.status === 'pending'
-          ? (isGoal ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l2)')
+          ? (isGoal ? 'var(--dsw-alias-brand-primary)' : isRequirement ? 'var(--dsw-alias-border-l2)' : 'var(--dsw-alias-border-l1)')
           : statusColor(box.node.status)
         const active = selected === box.node.name
         const titleY = GEO.padY + box.size * 0.92
+        const kind = box.depth === 0 ? 'GOAL' : box.depth === 1 ? 'REQ' : box.depth === 2 ? 'ROUTE' : 'STEP'
         nodes.push(h(
           'g',
           {
@@ -519,6 +584,15 @@ window.__ModuleLoader__.load({
             onClick: event => {
               event.stopPropagation()
               onSelect(box.node.name)
+            },
+            // Hold the right button on a block to move it; the position is
+            // written to the node's front matter when the button is released.
+            onContextMenu: event => event.preventDefault(),
+            onMouseDown: (event) => {
+              if (event.button !== 2) return
+              event.preventDefault()
+              event.stopPropagation()
+              onNodeDragStart(box.node.name, event)
             },
           },
           h('title', null, `${box.node.title}\n${box.node.name}`),
@@ -530,6 +604,7 @@ window.__ModuleLoader__.load({
             fill,
             stroke: active ? 'var(--dsw-alias-brand-primary)' : stroke,
             strokeWidth: active ? 2 : 1.2,
+            strokeDasharray: box.pinned ? '5 3' : undefined,
           }),
           h('circle', {
             cx: 0,
@@ -548,19 +623,17 @@ window.__ModuleLoader__.load({
             y: titleY + index * GEO.line,
             fill: 'var(--dsw-alias-label-primary)',
             fontSize: box.size,
-            fontWeight: isGoal ? 700 : isApproach ? 600 : 500,
+            fontWeight: isGoal ? 700 : isRequirement ? 600 : 500,
             style: { userSelect: 'none' },
           }, line)),
-          box.subtitle === ''
-            ? null
-            : h('text', {
-              key: 'sub',
-              x: GEO.padX,
-              y: titleY + (box.lines.length - 1) * GEO.line + GEO.subLine,
-              fill: 'var(--dsw-alias-label-secondary)',
-              fontSize: 10.5,
-              style: { userSelect: 'none' },
-            }, ellipsize(box.subtitle, 10.5, box.width - GEO.padX * 2)),
+          ...box.subLines.map((line, index) => h('text', {
+            key: `s${index}`,
+            x: GEO.padX,
+            y: titleY + (box.lines.length - 1) * GEO.line + GEO.subLine * (index + 1),
+            fill: 'var(--dsw-alias-label-secondary)',
+            fontSize: 10.5,
+            style: { userSelect: 'none' },
+          }, line)),
           h('text', {
             key: 'kind',
             x: box.width - GEO.padX,
@@ -570,7 +643,30 @@ window.__ModuleLoader__.load({
             fontSize: 8.5,
             opacity: 0.75,
             style: { userSelect: 'none', letterSpacing: '.08em' },
-          }, box.depth === 0 ? 'GOAL' : box.depth === 1 ? 'ROUTE' : 'STEP'),
+          }, kind),
+          box.toggle
+            ? h(
+              'g',
+              {
+                key: 'toggle',
+                transform: `translate(${box.width - 11} ${box.height - 11})`,
+                style: { cursor: 'pointer' },
+                onClick: (event) => {
+                  event.stopPropagation()
+                  onToggleExpand(box.node.name)
+                },
+              },
+              h('title', null, box.open ? t('collapseText') : t('expandText')),
+              h('circle', { r: 7.5, fill: 'var(--dsw-alias-bg-layer-2)', stroke: 'var(--dsw-alias-border-l2)', strokeWidth: 1 }),
+              h('text', {
+                textAnchor: 'middle',
+                y: 3.4,
+                fontSize: 9.5,
+                fill: 'var(--dsw-alias-label-secondary)',
+                style: { userSelect: 'none' },
+              }, box.open ? '▴' : '▾'),
+            )
+            : null,
         ))
       }
 
@@ -605,12 +701,15 @@ window.__ModuleLoader__.load({
       const [state, setState] = React.useState({ loading: true, error: null, data: null })
       const [selected, setSelected] = React.useState(null)
       const [draft, setDraft] = React.useState('')
+      const [titleDraft, setTitleDraft] = React.useState('')
       const [busy, setBusy] = React.useState(false)
       const [goalDraft, setGoalDraft] = React.useState('')
       const [adding, setAdding] = React.useState(false)
       const [addTitle, setAddTitle] = React.useState('')
       const [confirming, setConfirming] = React.useState(false)
       const [zoom, setZoom] = React.useState(1)
+      const [moved, setMoved] = React.useState({})
+      const [expanded, setExpanded] = React.useState(() => new Set())
       const signature = React.useRef('')
       const selectedRef = React.useRef(null)
       selectedRef.current = selected
@@ -668,7 +767,58 @@ window.__ModuleLoader__.load({
       })
       const roots = data === null ? [] : data.roots.map(id => byId.get(id)).filter(node => node !== undefined)
       const tree = roots.map(node => attach(node, new Set([node.id])))
-      const map = React.useMemo(() => layoutMindMap(tree), [data === null ? '' : data.signature])
+      const map = React.useMemo(
+        () => layoutMindMap(tree, expanded, moved),
+        [data === null ? '' : data.signature, expanded, moved],
+      )
+
+      // Right-button drag: the node follows the pointer and the button release
+      // writes its position into the node's front matter.
+      const nodeDrag = React.useRef(null)
+      const movedRef = React.useRef(moved)
+      movedRef.current = moved
+      const mutateRef = React.useRef(mutate)
+      mutateRef.current = mutate
+      const zoomLevel = React.useRef(zoom)
+      zoomLevel.current = zoom
+      const beginNodeDrag = (name, event) => {
+        const box = map.boxes.find(entry => entry.node.name === name)
+        if (box === undefined) return
+        nodeDrag.current = { name, startX: event.clientX, startY: event.clientY, originX: box.x, originY: box.y }
+        setMoved(previous => ({ ...previous, [name]: { x: box.x, y: box.y } }))
+      }
+      const toggleExpanded = (name) => {
+        setExpanded((previous) => {
+          const next = new Set(previous)
+          if (next.has(name)) next.delete(name)
+          else next.add(name)
+          return next
+        })
+      }
+      React.useEffect(() => {
+        const onMove = (event) => {
+          const dragState = nodeDrag.current
+          if (dragState === null) return
+          event.preventDefault()
+          const x = Math.max(0, dragState.originX + (event.clientX - dragState.startX) / zoomLevel.current)
+          const y = Math.max(0, dragState.originY + (event.clientY - dragState.startY) / zoomLevel.current)
+          setMoved(previous => ({ ...previous, [dragState.name]: { x, y } }))
+        }
+        const onUp = () => {
+          const dragState = nodeDrag.current
+          if (dragState === null) return
+          nodeDrag.current = null
+          const at = movedRef.current[dragState.name]
+          if (at === undefined) return
+          void mutateRef.current('position', { name: dragState.name, x: Math.round(at.x), y: Math.round(at.y) })
+        }
+        window.addEventListener('mousemove', onMove)
+        window.addEventListener('mouseup', onUp)
+        return () => {
+          window.removeEventListener('mousemove', onMove)
+          window.removeEventListener('mouseup', onUp)
+        }
+      }, [])
       const selectedNode = selected === null ? undefined : byId.get(selected)
 
       React.useEffect(() => {
@@ -677,6 +827,7 @@ window.__ModuleLoader__.load({
           return
         }
         setDraft(selectedNode.body)
+        setTitleDraft(selectedNode.title || '')
       }, [selected, selectedNode === undefined ? '' : selectedNode.mtime])
 
       const closeDrawer = () => {
@@ -691,11 +842,32 @@ window.__ModuleLoader__.load({
         void mutate('status', { name: node.name, status: next })
       }
 
-      // Drag to pan the canvas, so a wide map is navigable without scrollbars.
+      // One save writes both halves of the node: the front matter title and the
+      // Markdown body, each only when it actually changed.
+      const saveNode = async () => {
+        if (selectedNode === undefined) return
+        setBusy(true)
+        try {
+          const nextTitle = titleDraft.trim()
+          if (nextTitle !== '' && nextTitle !== selectedNode.title) {
+            await call('title', { method: 'POST', body: { sessionId, name: selectedNode.name, title: nextTitle } })
+          }
+          await call('save', { method: 'POST', body: { sessionId, name: selectedNode.name, content: draft } })
+          await load(true)
+          setState(previous => ({ ...previous, error: null }))
+        } catch (error) {
+          setState(previous => ({ ...previous, error: String(error?.message ?? error) }))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      // Drag to pan the canvas: left button, or the middle button over the map.
       const drag = React.useRef({ active: false, x: 0, y: 0, left: 0, top: 0 })
       const onPointerDown = (event) => {
         const canvas = canvasRef.current
-        if (canvas === null || event.button !== 0) return
+        if (canvas === null || (event.button !== 0 && event.button !== 1)) return
+        if (event.button === 1) event.preventDefault()
         drag.current = { active: true, x: event.clientX, y: event.clientY, left: canvas.scrollLeft, top: canvas.scrollTop }
         canvas.classList.add('dragging')
       }
@@ -714,6 +886,36 @@ window.__ModuleLoader__.load({
       const total = data === null ? 0 : data.nodes.length
       const showEmpty = sessionId !== '' && data !== null && tree.length === 0
 
+      // The wheel zooms the map instead of scrolling it, anchored on the pointer
+      // so the node under the cursor stays under the cursor.
+      const zoomRef = React.useRef(zoom)
+      zoomRef.current = zoom
+      React.useEffect(() => {
+        const canvas = canvasRef.current
+        if (canvas === null) return undefined
+        const onWheel = (event) => {
+          event.preventDefault()
+          const current = zoomRef.current
+          const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12
+          const next = Math.min(2.2, Math.max(0.35, Number((current * factor).toFixed(3))))
+          if (next === current) return
+          const rect = canvas.getBoundingClientRect()
+          const anchorX = event.clientX - rect.left
+          const anchorY = event.clientY - rect.top
+          const worldX = (canvas.scrollLeft + anchorX) / current
+          const worldY = (canvas.scrollTop + anchorY) / current
+          setZoom(next)
+          requestAnimationFrame(() => {
+            const live = canvasRef.current
+            if (live === null) return
+            live.scrollLeft = worldX * next - anchorX
+            live.scrollTop = worldY * next - anchorY
+          })
+        }
+        canvas.addEventListener('wheel', onWheel, { passive: false })
+        return () => canvas.removeEventListener('wheel', onWheel)
+      }, [showEmpty, sessionId])
+
       return h(
         'div',
         { className: 'dsh-tt-root', 'data-dsh-thinking-tree': 'panel' },
@@ -726,6 +928,14 @@ window.__ModuleLoader__.load({
           h(Button, { label: '−', title: t('zoomOut'), onClick: () => setZoom(value => Math.max(0.45, Number((value - 0.15).toFixed(2)))) }),
           h(Button, { label: '＋', title: t('zoomIn'), onClick: () => setZoom(value => Math.min(1.9, Number((value + 0.15).toFixed(2)))) }),
           h(Button, { label: '⤢', title: t('fit'), onClick: () => setZoom(1) }),
+          h(Button, {
+            label: '⇲',
+            title: t('arrange'),
+            onClick: () => {
+              setMoved({})
+              void mutate('arrange', {})
+            },
+          }),
           h(Button, { label: '⟳', title: t('refresh'), onClick: () => void load(true) }),
         ),
         state.error !== null ? h('div', { className: 'dsh-tt-error' }, `${t('fail')}: ${state.error}`) : null,
@@ -769,6 +979,7 @@ window.__ModuleLoader__.load({
               {
                 className: 'dsh-tt-canvas',
                 ref: canvasRef,
+                title: t('hint'),
                 onMouseDown: onPointerDown,
                 onMouseMove: onPointerMove,
                 onMouseUp: onPointerUp,
@@ -785,6 +996,8 @@ window.__ModuleLoader__.load({
                   selected,
                   onSelect: name => setSelected(current => (current === name ? null : name)),
                   onStatus: cycleStatus,
+                  onToggleExpand: toggleExpanded,
+                  onNodeDragStart: beginNodeDrag,
                 }),
             ),
         selectedNode === undefined
@@ -799,6 +1012,20 @@ window.__ModuleLoader__.load({
               h('span', { className: 'dsh-tt-drawer-file' }, selectedNode.name),
               h(Button, { label: t('close'), title: t('close'), onClick: closeDrawer }),
             ),
+            h(
+              'div',
+              { className: 'dsh-tt-row' },
+              h('span', { className: 'dsh-tt-meta', style: { whiteSpace: 'nowrap' } }, t('nodeTitle')),
+              h('input', {
+                className: 'dsh-tt-input',
+                value: titleDraft,
+                onChange: event => setTitleDraft(event.target.value),
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter') void saveNode()
+                  if (event.key === 'Escape') closeDrawer()
+                },
+              }),
+            ),
             h('textarea', {
               className: 'dsh-tt-editor',
               value: draft,
@@ -806,9 +1033,7 @@ window.__ModuleLoader__.load({
               onChange: event => setDraft(event.target.value),
               onKeyDown: (event) => {
                 if (event.key === 'Escape') closeDrawer()
-                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-                  void mutate('save', { name: selectedNode.name, content: draft })
-                }
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void saveNode()
               },
             }),
             h(
@@ -818,7 +1043,7 @@ window.__ModuleLoader__.load({
                 label: busy ? t('saving') : t('save'),
                 primary: true,
                 disabled: busy,
-                onClick: () => void mutate('save', { name: selectedNode.name, content: draft }),
+                onClick: () => void saveNode(),
               }),
               h(Button, { label: t('addChild'), onClick: () => setAdding(value => !value) }),
               h(Button, {

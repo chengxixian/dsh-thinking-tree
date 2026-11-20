@@ -88,6 +88,9 @@ export function apply(ctx) {
     { path: `${ROUTE_PREFIX}/save`, methods: ['POST'], fetch: (request) => serveSave(ctx, request) },
     { path: `${ROUTE_PREFIX}/create`, methods: ['POST'], fetch: (request) => serveCreate(ctx, request) },
     { path: `${ROUTE_PREFIX}/status`, methods: ['POST'], fetch: (request) => serveStatus(ctx, request) },
+    { path: `${ROUTE_PREFIX}/title`, methods: ['POST'], fetch: (request) => serveTitle(ctx, request) },
+    { path: `${ROUTE_PREFIX}/position`, methods: ['POST'], fetch: (request) => servePosition(ctx, request) },
+    { path: `${ROUTE_PREFIX}/arrange`, methods: ['POST'], fetch: (request) => serveArrange(ctx, request) },
     { path: `${ROUTE_PREFIX}/delete`, methods: ['POST'], fetch: (request) => serveDelete(ctx, request) },
   ]
   for (const route of routes) {
@@ -142,6 +145,18 @@ function folderOf(ctx, sessionId) {
 /* ------------------------------------------------------------------ *
  * Front matter
  * ------------------------------------------------------------------ */
+
+/**
+ * Read a front matter number, treating blanks as "not pinned".
+ * @param {string} value - raw scalar.
+ * @returns {number|undefined} the number, or undefined.
+ */
+function finiteOrUndefined(value) {
+  const text = String(value ?? '').trim()
+  if (text === '' || text === 'null' || text === '~') return undefined
+  const parsed = Number(text)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
 
 /**
  * Read the leading YAML block of a node file.
@@ -273,6 +288,8 @@ async function readTree(dir) {
     const { data, body } = parseFrontMatter(text)
     const fallback = name.replace(/\.md$/, '')
     const orderFromName = Number.parseInt(/^(\d+)/.exec(name)?.[1] ?? '', 10)
+    const pinnedX = finiteOrUndefined(data.x)
+    const pinnedY = finiteOrUndefined(data.y)
     nodes.push({
       name,
       id: typeof data.id === 'string' && data.id !== '' ? data.id : fallback,
@@ -281,6 +298,8 @@ async function readTree(dir) {
       title: (typeof data.title === 'string' && data.title !== '' ? data.title : firstHeading(body) || fallback),
       status: STATUSES.includes(data.status) ? data.status : 'pending',
       body: body.trimStart(),
+      x: pinnedX,
+      y: pinnedY,
       mtime: info.mtimeMs,
     })
   }
@@ -503,6 +522,89 @@ async function serveStatus(ctx, request) {
     return json({ ok: true, status: input.status })
   } catch (error) {
     return json({ ok: false, error: 'status-failed', message: String(error?.message ?? error) }, 500)
+  }
+}
+
+/**
+ * Rename one node: front matter `title` only, body untouched.
+ * @param ctx - Host context.
+ * @param request - `POST` `{ sessionId, name, title }`.
+ * @returns the rename receipt.
+ */
+async function serveTitle(ctx, request) {
+  const input = await readJson(request)
+  if (input === undefined) return json({ ok: false, error: 'bad-body' }, 400)
+  const name = safeName(input.name)
+  if (name === undefined) return json({ ok: false, error: 'bad-name' }, 400)
+  if (typeof input.title !== 'string' || input.title.trim() === '') return json({ ok: false, error: 'bad-title' }, 400)
+  const folder = folderOf(ctx, input.sessionId)
+  if (folder.error !== undefined) return json({ ok: false, ...folder }, 400)
+  try {
+    const path = join(folder.dir, name)
+    const text = await readFile(path, 'utf8')
+    const title = input.title.trim().slice(0, 160)
+    await writeFile(path, writeField(writeField(text, 'title', title), 'updated', new Date().toISOString()), 'utf8')
+    return json({ ok: true, title })
+  } catch (error) {
+    return json({ ok: false, error: 'title-failed', message: String(error?.message ?? error) }, 500)
+  }
+}
+
+/**
+ * Pin or unpin one node's canvas position: front matter `x` / `y` only.
+ * @param ctx - Host context.
+ * @param request - `POST` `{ sessionId, name, x, y }`; a blank coordinate unpins it.
+ * @returns the position receipt.
+ */
+async function servePosition(ctx, request) {
+  const input = await readJson(request)
+  if (input === undefined) return json({ ok: false, error: 'bad-body' }, 400)
+  const name = safeName(input.name)
+  if (name === undefined) return json({ ok: false, error: 'bad-name' }, 400)
+  const folder = folderOf(ctx, input.sessionId)
+  if (folder.error !== undefined) return json({ ok: false, ...folder }, 400)
+  const x = input.x
+  const y = input.y
+  const pinned = typeof x === 'number' && Number.isFinite(x) && typeof y === 'number' && Number.isFinite(y)
+  try {
+    const path = join(folder.dir, name)
+    let text = await readFile(path, 'utf8')
+    text = writeField(text, 'x', pinned ? Math.round(x) : '')
+    text = writeField(text, 'y', pinned ? Math.round(y) : '')
+    text = writeField(text, 'updated', new Date().toISOString())
+    await writeFile(path, text, 'utf8')
+    return json({ ok: true, pinned })
+  } catch (error) {
+    return json({ ok: false, error: 'position-failed', message: String(error?.message ?? error) }, 500)
+  }
+}
+
+/**
+ * Clear every pinned position so the whole map goes back to automatic layout.
+ * @param ctx - Host context.
+ * @param request - `POST` `{ sessionId }`.
+ * @returns the number of nodes unpinned.
+ */
+async function serveArrange(ctx, request) {
+  const input = await readJson(request)
+  if (input === undefined) return json({ ok: false, error: 'bad-body' }, 400)
+  const folder = folderOf(ctx, input.sessionId)
+  if (folder.error !== undefined) return json({ ok: false, ...folder }, 400)
+  try {
+    const tree = await readTree(folder.dir)
+    let cleared = 0
+    for (const node of tree.nodes) {
+      if (node.x === undefined && node.y === undefined) continue
+      const path = join(folder.dir, node.name)
+      let text = await readFile(path, 'utf8')
+      text = writeField(text, 'x', '')
+      text = writeField(text, 'y', '')
+      await writeFile(path, text, 'utf8')
+      cleared += 1
+    }
+    return json({ ok: true, cleared })
+  } catch (error) {
+    return json({ ok: false, error: 'arrange-failed', message: String(error?.message ?? error) }, 500)
   }
 }
 
