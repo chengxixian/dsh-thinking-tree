@@ -24,15 +24,18 @@ English | [中文](README.zh.md)
 
 A slim button sits on the right edge of the window. Clicking it opens the right Sidebar on the thinking-tree tab; the tab is also offered in the Sidebar guide.
 
-The tree is not a chat transcript. It is a folder:
+The tree is not a chat transcript. It is a folder — one subfolder per conversation:
 
 ```
 <workspace>/thinking-tree/
-├── 00-goal.md                 → 目标
-├── 01-tech-route.md           → 路线
-├── 01-1-host-route.md         → 步骤
-└── 02-visual-style.md         → 路线
+└── s-4a0fbba9/                → this conversation (id prefix of the session)
+    ├── 00-goal.md             → goal
+    ├── 01-tech-route.md       → approach
+    ├── 01-1-host-route.md     → step
+    └── 02-visual-style.md     → approach
 ```
+
+The subfolders exist for isolation: when every conversation shared one flat folder, another conversation's agent writing `parent: 00-goal` landed inside your tree. The API now reads only its own subfolder, and a tree from an older install is migrated on first read using the `session:` on its root. Directories starting with `_` (such as `_orphaned/`) are skipped.
 
 `parent` in each file's front matter decides the shape; file names are for humans. Depth *is* the tier: depth 0 is the goal, depth 1 is the approach, depth 2 and deeper are the concrete steps.
 
@@ -108,7 +111,7 @@ Nothing is cached on the Host: each request re-reads the folder, so the files re
 
 - Bound to the Session's workspace directory; a Session without a resolvable workspace shows an empty panel.
 - The Markdown renderer covers headings, lists, code spans and fences, blockquotes, emphasis, and links — not tables, images, or raw HTML.
-- The tree is not part of the Session log. A forked Session shares the same folder.
+- The tree is not part of the Session log. Each conversation keeps its own folder (`thinking-tree/s-xxxx/`), so two conversations never see each other's nodes.
 - One goal node is expected; additional roots are rendered as extra top-level cards.
 
 ## License
