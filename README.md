@@ -40,6 +40,7 @@ The tree is not a chat transcript. It is a folder:
 
 - **The user can edit the plan.** Every block is plain Markdown in the panel: click a card, change the text, save. Status cycles pending → in progress → done → blocked. Add a child, delete a subtree.
 - **The agent reads the same thing.** A bundled skill (`thinking-tree`) tells it to build the tree at the start of a multi-step task, to keep updating it while it works, and — the important part — to **re-read the folder before implementing and follow the user's edits instead of its own memory of the plan**.
+- **A requirement is decomposed before any work starts — without relying on the model remembering.** The five-question mandate (what it is / what "done" looks like / which independent pieces / how each is built / how each is verified) is registered as a system-prompt context, so it is in the model's context **every step**; the `requirement-breakdown` skill is only the detailed manual behind that rule. Self-check rounds come from the panel button and the `thinking-tree-selfcheck` skill.
 - **The panel is live.** It re-reads the folder about every 1.5 seconds while open, so the tree grows as the agent writes. Editing pauses the refresh.
 
 ## Install

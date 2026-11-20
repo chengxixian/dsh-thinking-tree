@@ -39,6 +39,8 @@ const STATUSES = ['pending', 'active', 'done', 'blocked']
 const SKILL_BODY_URL = new URL('./assets/thinking-tree/SKILL.md', import.meta.url)
 const SELF_CHECK_SKILL_NAME = 'thinking-tree-selfcheck'
 const SELF_CHECK_BODY_URL = new URL('./assets/thinking-tree-selfcheck/SKILL.md', import.meta.url)
+const BREAKDOWN_SKILL_NAME = 'requirement-breakdown'
+const BREAKDOWN_BODY_URL = new URL('./assets/requirement-breakdown/SKILL.md', import.meta.url)
 const RESOURCE_BASE = {
   kind: 'directory',
   path: fileURLToPath(new URL('./assets/thinking-tree/', import.meta.url)),
@@ -124,6 +126,9 @@ export const name = 'thinking-tree'
 /** Set once the standing prompt reminder is registered; reported through diagnostics. */
 let reminderRegistered = false
 
+/** Set once the decomposition mandate is registered; reported through diagnostics. */
+let breakdownRegistered = false
+
 /** The reminder that puts the chain back in front of the model on every step. */
 const REMINDER_TEXT = [
   '【思考链 · 每轮都要看】',
@@ -133,6 +138,20 @@ const REMINDER_TEXT = [
   '- 用户提了新要求：先在第二层加一个节点，再动手。',
   '- 收尾前：状态写进文件，不要只放在记忆里——被压缩之后只剩磁盘上的东西。',
   '- 自检：`00-goal.md` 的 `selfcheck: on` 时，每轮结束都会收到「开始自检 · 第 N 轮」，按 `thinking-tree-selfcheck` 技能执行。',
+].join('\n')
+
+/** The mandate that every requirement gets decomposed before any work starts. */
+const BREAKDOWN_MANDATE = [
+  '【收到要求先拆解 · 每轮生效】',
+  '用户在对话里提出要求时，动手之前必须拆开，五问缺一不可：',
+  '1. 要什么：一句话，去掉形容词，只留动词和名词。',
+  '2. 做成什么样：验收标准，必须能测（哪个文件、哪条命令、什么行为）。',
+  '3. 拆成几块：互不重叠，每块一个交付物。',
+  '4. 每块怎么做：步骤 + 工具 + 技术路线。',
+  '5. 每块怎么验证：跑什么、看什么、预期结果是什么。',
+  '拆完写进 thinking-tree：第二层=要求（正文写「做成什么样 / 怎么验证」），第三层=方案（写「怎么做」），第四层=动作。',
+  '禁止用「优化一下」「完善一下」「处理一下」这类无法验收的说法；出现「并且/然后」就说明该拆成两个节点。',
+  '详细方法见 requirement-breakdown 技能——规则本身已在系统提示里，不依赖激活技能。',
 ].join('\n')
 
 /**
@@ -154,6 +173,20 @@ function registerPromptReminder(ctx) {
     },
     'thinking-tree: prompt reminder',
   )
+  // The decomposition mandate rides the same channel on purpose: a rule that only
+  // applies when a model chooses to load a skill is a rule that sometimes does
+  // not apply, and this one has to hold for every requirement.
+  ctx.effect(
+    () => {
+      const dispose = systemPrompt.context({ name: 'requirement-breakdown', order: 940, text: BREAKDOWN_MANDATE })
+      breakdownRegistered = true
+      return () => {
+        breakdownRegistered = false
+        dispose()
+      }
+    },
+    'thinking-tree: decomposition mandate',
+  )
 }
 
 /**
@@ -163,6 +196,15 @@ function registerPromptReminder(ctx) {
 export function apply(ctx) {
   ctx.effect(() => ctx.skills.registerProvider(() => skillProvider), 'thinking-tree: skill provider')
   registerPromptReminder(ctx)
+  ctx.effect(
+    () => ctx.skills.registerProvider(() => makeSkillProvider(
+      BREAKDOWN_SKILL_NAME,
+      BREAKDOWN_BODY_URL,
+      'Decompose a requirement before starting: what it is, what "done" looks like, which independent pieces it splits into, how each piece is built and how each is verified. The mandate is always in the system prompt; this skill is the detailed manual.',
+      fileURLToPath(new URL('./assets/requirement-breakdown/', import.meta.url)),
+    )),
+    'thinking-tree: breakdown skill provider',
+  )
   ctx.effect(
     () => ctx.skills.registerProvider(() => makeSkillProvider(
       SELF_CHECK_SKILL_NAME,
@@ -1055,6 +1097,7 @@ async function serveDiag(ctx, request) {
       payload = { raw: text }
     }
     payload.reminder = reminderRegistered
+    payload.breakdown = breakdownRegistered
     // Always attach the live Session list: it is how an outside observer can
     // tell which Session a window belongs to without guessing.
     try {
