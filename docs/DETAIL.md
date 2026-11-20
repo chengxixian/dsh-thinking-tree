@@ -5,7 +5,7 @@ Draws the current task's chain of thought as a live mind map in the right sideba
 ## What it adds
 
 - **A pill on the right edge of the window.** Clicking it opens the right Sidebar on the thinking-tree tab. The tab is also offered as a card in the Sidebar's guide.
-- **A mind map, not a list.** The goal sits at the left, requirements branch to the right, and their approach and steps continue outward, joined by curved links. The wheel zooms around the pointer; the left or middle button drags the canvas; holding the right button on a block moves that block and stores its coordinates in the file.
+- **A mind map, not a list.** The goal sits at the left, requirements branch to the right, and their approach and steps continue outward, joined by curved links. The wheel zooms around the pointer; the left or middle button drags the canvas; holding the left button on a block moves that block and stores its coordinates in the file.
 - **Tiers by depth.** Depth 0 is the goal, depth 1 is what the user asked for, depth 2 is the technical route, deeper nodes are concrete steps. Labels on each block show `GOAL` / `REQ` / `ROUTE` / `STEP`.
 - **Editable blocks.** Clicking a block opens a drawer with the node's title, its Markdown body, and save / add child / delete (two clicks, deletes the subtree). A small ▾ appears when the text was cut; it expands the block to show everything.
 - **Live updates.** While the panel is open it re-reads the folder about every 1.5 seconds, so blocks change as the agent writes them. Editing a block pauses the refresh until you save or close.

@@ -68,7 +68,7 @@ window.__ModuleLoader__.load({
       zoomIn: 'Zoom in',
       zoomOut: 'Zoom out',
       fit: 'Fit',
-      hint: 'Click a node to edit it · right-drag a node to move it · wheel to zoom',
+      hint: 'Click a node to edit it · hold the left button on a node to move it · wheel to zoom',
       nodeTitle: 'Title',
       expandText: 'Show the whole text',
       collapseText: 'Collapse',
@@ -109,7 +109,7 @@ window.__ModuleLoader__.load({
       zoomIn: '放大',
       zoomOut: '缩小',
       fit: '适应',
-      hint: '点节点改 · 右键长按拖动块 · 滚轮缩放',
+      hint: '点节点改 · 左键长按拖动块 · 滚轮缩放',
       nodeTitle: '标题',
       expandText: '展开全文',
       collapseText: '收起',
@@ -458,12 +458,39 @@ window.__ModuleLoader__.load({
      * @returns {Function} cleanup that removes the widget.
      */
     function mountEdgeButton(ctx, t) {
-      if (typeof document === 'undefined' || document.body === null) return () => undefined
+      if (typeof document === 'undefined') return () => undefined
+      let dispose = () => undefined
+      const attach = () => {
+        const built = buildEdgeButton(ctx, t)
+        dispose = built === undefined ? () => undefined : built
+      }
+      // The client module may run before the document body exists, so mounting
+      // is deferred until it does instead of silently doing nothing.
+      if (document.body !== null) attach()
+      else {
+        const onReady = () => attach()
+        document.addEventListener('DOMContentLoaded', onReady, { once: true })
+        return () => {
+          document.removeEventListener('DOMContentLoaded', onReady)
+          dispose()
+        }
+      }
+      return () => dispose()
+    }
+
+    /**
+     * Build the pill itself; the document body must exist.
+     * @param {object} ctx - client plugin context.
+     * @param {Function} t - translator.
+     * @returns {Function} cleanup that removes the widget.
+     */
+    function buildEdgeButton(ctx, t) {
+      if (document.body === null) return () => undefined
       for (const stale of Array.from(document.querySelectorAll('[data-dsh-thinking-tree="host"]'))) stale.remove()
 
       const host = document.createElement('div')
       host.setAttribute('data-dsh-thinking-tree', 'host')
-      host.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;pointer-events:none;z-index:60;display:flex;align-items:center;justify-content:flex-end'
+      host.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;pointer-events:none;z-index:2147483000;display:flex;align-items:center;justify-content:flex-end'
 
       const sheet = document.createElement('style')
       sheet.textContent = '[data-dsh-thinking-tree="edge"]{transition:background .14s,color .14s,padding-right .14s}'
@@ -585,11 +612,12 @@ window.__ModuleLoader__.load({
               event.stopPropagation()
               onSelect(box.node.name)
             },
-            // Hold the right button on a block to move it; the position is
+            // Hold the left button on a block to move it; the position is
             // written to the node's front matter when the button is released.
+            // The press is swallowed here so the canvas does not also pan.
             onContextMenu: event => event.preventDefault(),
             onMouseDown: (event) => {
-              if (event.button !== 2) return
+              if (event.button !== 0) return
               event.preventDefault()
               event.stopPropagation()
               onNodeDragStart(box.node.name, event)
@@ -775,6 +803,7 @@ window.__ModuleLoader__.load({
       // Right-button drag: the node follows the pointer and the button release
       // writes its position into the node's front matter.
       const nodeDrag = React.useRef(null)
+      const dragged = React.useRef(false)
       const movedRef = React.useRef(moved)
       movedRef.current = moved
       const mutateRef = React.useRef(mutate)
@@ -784,6 +813,7 @@ window.__ModuleLoader__.load({
       const beginNodeDrag = (name, event) => {
         const box = map.boxes.find(entry => entry.node.name === name)
         if (box === undefined) return
+        dragged.current = false
         nodeDrag.current = { name, startX: event.clientX, startY: event.clientY, originX: box.x, originY: box.y }
         setMoved(previous => ({ ...previous, [name]: { x: box.x, y: box.y } }))
       }
@@ -800,14 +830,19 @@ window.__ModuleLoader__.load({
           const dragState = nodeDrag.current
           if (dragState === null) return
           event.preventDefault()
-          const x = Math.max(0, dragState.originX + (event.clientX - dragState.startX) / zoomLevel.current)
-          const y = Math.max(0, dragState.originY + (event.clientY - dragState.startY) / zoomLevel.current)
+          const deltaX = event.clientX - dragState.startX
+          const deltaY = event.clientY - dragState.startY
+          // Past a few pixels this is a move, not the click that opens the drawer.
+          if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) dragged.current = true
+          const x = Math.max(0, dragState.originX + deltaX / zoomLevel.current)
+          const y = Math.max(0, dragState.originY + deltaY / zoomLevel.current)
           setMoved(previous => ({ ...previous, [dragState.name]: { x, y } }))
         }
         const onUp = () => {
           const dragState = nodeDrag.current
           if (dragState === null) return
           nodeDrag.current = null
+          setTimeout(() => { dragged.current = false }, 0)
           const at = movedRef.current[dragState.name]
           if (at === undefined) return
           void mutateRef.current('position', { name: dragState.name, x: Math.round(at.x), y: Math.round(at.y) })
@@ -994,7 +1029,14 @@ window.__ModuleLoader__.load({
                   height: map.height,
                   zoom,
                   selected,
-                  onSelect: name => setSelected(current => (current === name ? null : name)),
+                  onSelect: (name) => {
+                    // A drag ends with a click on the same block; that one is a move, not a selection.
+                    if (dragged.current) {
+                      dragged.current = false
+                      return
+                    }
+                    setSelected(current => (current === name ? null : name))
+                  },
                   onStatus: cycleStatus,
                   onToggleExpand: toggleExpanded,
                   onNodeDragStart: beginNodeDrag,
