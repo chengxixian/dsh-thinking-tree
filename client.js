@@ -287,7 +287,7 @@ window.__ModuleLoader__.load({
 .dsh-tt-empty{display:flex;flex-direction:column;gap:8px;padding:16px 4px;color:var(--dsw-alias-label-secondary);align-items:flex-start}
 .dsh-tt-empty strong{color:var(--dsw-alias-label-primary);font-size:13px}
 .dsh-tt-error{color:var(--dsw-alias-state-error-primary);font-size:11.5px;padding:2px 0}
-.dsh-tt-edge{position:fixed;right:0;top:46%;transform:translateY(-50%);z-index:40;display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 5px;border:1px solid var(--dsw-alias-border-l1);border-right:none;border-radius:9px 0 0 9px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);cursor:pointer;box-shadow:-2px 0 10px rgba(0,0,0,.09);font-family:inherit;transition:background .14s,color .14s,padding-right .14s}
+.dsh-tt-edge{position:fixed;right:0;top:46%;transform:translateY(-50%);z-index:40;display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 5px;border:1px solid var(--dsw-alias-border-l1);border-right:none;border-radius:9px 0 0 9px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);cursor:pointer;box-shadow:-2px 0 10px rgba(0,0,0,.09);font-family:inherit;transition:background .14s,color .14s,padding-right .14s;pointer-events:auto}
 .dsh-tt-edge:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding-right:8px}
 .dsh-tt-edge-label{writing-mode:vertical-rl;font-size:10.5px;letter-spacing:.16em;line-height:1}
 .dsh-tt-edge:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
@@ -589,8 +589,16 @@ window.__ModuleLoader__.load({
       const byId = new Map()
       if (data !== null) for (const node of data.nodes) byId.set(node.id, node)
       const roots = data === null ? [] : data.roots.map(id => byId.get(id)).filter(node => node !== undefined)
-      const attach = (node) => ({ ...node, childNodes: (node.children || []).map(id => byId.get(id)).filter(child => child !== undefined).map(attach) })
-      const tree = roots.map(attach)
+      // A hand-edited `parent` cycle would otherwise recurse forever.
+      const attach = (node, seen) => ({
+        ...node,
+        childNodes: (node.children || [])
+          .filter(id => !seen.has(id))
+          .map(id => byId.get(id))
+          .filter(child => child !== undefined)
+          .map(child => attach(child, new Set([...seen, child.id]))),
+      })
+      const tree = roots.map(node => attach(node, new Set([node.id])))
       const total = data === null ? 0 : data.nodes.length
 
       const handlers = {

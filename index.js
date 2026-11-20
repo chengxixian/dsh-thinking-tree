@@ -454,8 +454,7 @@ async function serveCreate(ctx, request) {
     const siblings = tree.nodes.filter(node => node.parent === parent)
     const order = siblings.length === 0 ? 0 : Math.max(...siblings.map(node => node.order)) + 1
     const depth = parent === '' ? 0 : 1
-    const prefix = parent === '' ? String(order).padStart(2, '0') : `${String(order).padStart(2, '0')}`
-    const base = `${prefix}-${slug(title)}`
+    const base = `${String(order).padStart(2, '0')}-${slug(title)}`
     const taken = new Set(tree.nodes.map(node => node.name))
     let name = `${base}.md`
     for (let index = 2; taken.has(name); index += 1) name = `${base}-${index}.md`
@@ -527,7 +526,10 @@ async function serveDelete(ctx, request) {
     const targets = new Set([name])
     if (input.cascade === true && start !== undefined) {
       const byId = new Map(shaped.nodes.map(node => [node.id, node]))
+      const visited = new Set()
       const walk = (node) => {
+        if (visited.has(node.id)) return
+        visited.add(node.id)
         targets.add(node.name)
         for (const childId of node.children.map(child => child.id)) {
           const child = byId.get(childId)
