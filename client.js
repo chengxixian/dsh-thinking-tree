@@ -287,7 +287,7 @@ window.__ModuleLoader__.load({
       const pins = moved !== null && typeof moved === 'object' ? moved : {}
 
       const measureNode = (node, depth) => {
-        const size = depth === 0 ? 13.5 : depth === 1 ? 12.8 : depth === 2 ? 12.2 : 11.6
+        const size = depth === 0 ? 13.5 : depth === 1 ? 12.8 : depth === 2 ? 12.4 : depth === 3 ? 12.1 : 11.6
         const isOpen = open.has(node.name)
         const budget = GEO.maxW - GEO.padX * 2
         const titleBudget = depth === 0 ? budget - 8 : budget
@@ -335,21 +335,44 @@ window.__ModuleLoader__.load({
       }
 
       let cursorY = 0
+      /**
+       * Move a whole subtree down, keeping the parent/child centring intact.
+       * @param {object} node - subtree root (its own y is set by the caller).
+       * @param {number} delta - pixels to add.
+       */
+      const shiftSubtree = (node, delta) => {
+        for (const child of node.childNodes || []) {
+          const box = boxes.get(child.name)
+          if (box === undefined) continue
+          box.y += delta
+          shiftSubtree(child, delta)
+        }
+      }
       const place = (node) => {
         const box = boxes.get(node.name)
         box.x = columnX[box.depth]
         const children = node.childNodes || []
+        const startY = cursorY
         if (children.length === 0) {
-          box.y = cursorY
-          cursorY += box.height + GEO.gapY
-        } else {
-          const tops = children.map(place)
-          const first = boxes.get(children[0].name)
-          const last = boxes.get(children[children.length - 1].name)
-          const centre = (first.y + last.y + last.height) / 2
-          box.y = centre - box.height / 2
-          if (box.y < tops[0]) box.y = tops[0]
+          box.y = startY
+          cursorY = startY + box.height + GEO.gapY
+          return box.y
         }
+        for (const child of children) place(child)
+        const first = boxes.get(children[0].name)
+        const last = boxes.get(children[children.length - 1].name)
+        let y = (first.y + last.y + last.height) / 2 - box.height / 2
+        // A parent taller than its own band must not climb above the band start,
+        // otherwise it overlaps the previous sibling in the same column.
+        if (y < startY) {
+          const shift = startY - y
+          shiftSubtree(node, shift)
+          cursorY += shift
+          y = startY
+        }
+        box.y = y
+        // Reserve the parent's own height when it reaches past its children.
+        if (box.y + box.height + GEO.gapY > cursorY) cursorY = box.y + box.height + GEO.gapY
         return box.y
       }
       for (const root of roots) place(root)
@@ -683,20 +706,19 @@ window.__ModuleLoader__.load({
       for (const box of boxes) {
         const isGoal = box.depth === 0
         const isRequirement = box.depth === 1
-        const isRoute = box.depth === 2
+        const isPlan = box.depth === 2
+        const isRoute = box.depth === 3
         const fill = isGoal
           ? 'var(--dsw-alias-bg-layer-2)'
-          : isRequirement
+          : isRequirement || isPlan || isRoute
             ? 'var(--dsw-alias-bg-layer-1)'
-            : isRoute
-              ? 'var(--dsw-alias-bg-layer-1)'
-              : 'var(--dsw-alias-bg-base)'
+            : 'var(--dsw-alias-bg-base)'
         const stroke = box.node.status === 'pending'
           ? (isGoal ? 'var(--dsw-alias-brand-primary)' : isRequirement ? 'var(--dsw-alias-border-l2)' : 'var(--dsw-alias-border-l1)')
           : statusColor(box.node.status)
         const active = selected === box.node.name
         const titleY = GEO.padY + box.size * 0.92
-        const kind = box.depth === 0 ? 'GOAL' : box.depth === 1 ? 'REQ' : box.depth === 2 ? 'ROUTE' : 'STEP'
+        const kind = box.depth === 0 ? 'GOAL' : box.depth === 1 ? 'REQ' : box.depth === 2 ? 'PLAN' : box.depth === 3 ? 'ROUTE' : 'STEP'
         nodes.push(h(
           'g',
           {
