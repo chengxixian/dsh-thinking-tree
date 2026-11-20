@@ -13,7 +13,7 @@
  * here, each request re-reads the directory.
  */
 import { createHash } from 'node:crypto'
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -291,7 +291,77 @@ function folderOf(ctx, sessionId) {
   if (typeof sessionId !== 'string' || sessionId === '') return { error: 'missing-session', message: 'sessionId is required' }
   const root = workspaceRootOf(ctx, sessionId)
   if (root === undefined) return { error: 'unknown-session', message: `no workspace for session ${sessionId}` }
-  return { root, dir: join(root, FOLDER) }
+  const base = join(root, FOLDER)
+  const key = sessionKey(sessionId)
+  // One directory per conversation. A flat shared folder let another
+  // conversation's agent write `parent: 00-goal` and land inside this tree.
+  return { root, base, dir: join(base, sessionDirName(key)), key }
+}
+
+/**
+ * Directory name for one conversation's tree.
+ * @param key - sanitized session key.
+ * @returns a short stable directory name.
+ */
+function sessionDirName(key) {
+  const tail = key.startsWith('session-') ? key.slice('session-'.length) : key
+  return `s-${tail.replace(/[^A-Za-z0-9]/g, '').slice(0, 8) || 'unknown'}`
+}
+
+/**
+ * Move a conversation's nodes into its own directory the first time it is read.
+ *
+ * Earlier versions kept every conversation in one flat folder; those files carry
+ * the owning `session:` on their roots, so they can be moved without guessing.
+ * @param folder - resolved folder with `base`, `dir` and `key`.
+ * @returns whether anything was moved.
+ */
+async function adoptLegacyTree(folder) {
+  if (folder.dir === undefined || folder.base === undefined) return false
+  try {
+    await mkdir(folder.dir, { recursive: true })
+  } catch {
+    return false
+  }
+  let names
+  try {
+    names = await readdir(folder.base)
+  } catch {
+    return false
+  }
+  const flat = names.filter(name => name.endsWith('.md'))
+  if (flat.length === 0) return false
+  const nodes = []
+  for (const name of flat) {
+    try {
+      const text = await readFile(join(folder.base, name), 'utf8')
+      const { data, body } = parseFrontMatter(text)
+      nodes.push({ name, id: typeof data.id === 'string' ? data.id : name.replace(/\.md$/, ''), parent: data.parent ?? '', session: typeof data.session === 'string' ? data.session : '', body })
+    } catch {
+      continue
+    }
+  }
+  const shaped = shapeTree(nodes)
+  const mine = shaped.roots.filter(root => root.session === folder.key)
+  if (mine.length === 0) return false
+  const keep = new Set()
+  const walk = node => {
+    keep.add(node.id)
+    keep.add(node.name)
+    for (const child of node.children) walk(child)
+  }
+  for (const root of mine) walk(root)
+  let moved = false
+  for (const node of nodes) {
+    if (!keep.has(node.id) && !keep.has(node.name)) continue
+    try {
+      await rename(join(folder.base, node.name), join(folder.dir, node.name))
+      moved = true
+    } catch {
+      // A failed move leaves the file where it was; the reader simply ignores it.
+    }
+  }
+  return moved
 }
 
 /* ------------------------------------------------------------------ *
@@ -479,13 +549,15 @@ async function selfCheckAfterTurn(ctx, payload) {
     const root = session?.header?.cwd
     const sessionId = session?.id
     if (typeof root !== 'string' || typeof sessionId !== 'string') return
-    const tree = await readTree(join(root, FOLDER))
-    if (!tree.exists) return
-    const { shaped } = await readScopedTree({ dir: join(root, FOLDER) }, sessionId)
+    const key = sessionKey(sessionId)
+    const base = join(root, FOLDER)
+    const dir = join(base, sessionDirName(key))
+    if (!(await readTree(dir)).exists) return
+    const { shaped } = await readScopedTree({ base, dir, key }, sessionId)
     const goal = shaped.roots[0]
     if (goal === undefined || goal.selfcheck !== 'on') return
     const round = Number(goal.selfcheckRound ?? 0) + 1
-    const path = join(root, FOLDER, goal.name)
+    const path = join(dir, goal.name)
     let text = await readFile(path, 'utf8')
     if (round > MAX_SELF_CHECK_ROUNDS) {
       // Stop looping and hand the decision back with the reason on the node.
@@ -737,6 +809,9 @@ function sessionKey(sessionId) {
  */
 async function readScopedTree(folder, sessionId) {
   const key = sessionKey(sessionId)
+  // One conversation may still be reading a folder that predates per-session
+  // directories; move its nodes in before the first scoped read.
+  if (typeof folder.base === 'string') await adoptLegacyTree({ ...folder, key })
   const tree = await readTree(folder.dir)
   const all = shapeTree(tree.nodes)
   let adopted = false
@@ -843,7 +918,7 @@ async function serveTree(ctx, request) {
     const { tree, shaped } = await readScopedTree(folder, sessionId)
     return json({
       ok: true,
-      folder: FOLDER,
+      folder: `${FOLDER}/${sessionDirName(sessionKey(sessionId))}`,
       absolute: folder.dir,
       exists: tree.exists,
       signature: tree.signature,

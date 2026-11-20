@@ -54,7 +54,7 @@ let goalName
 {
   const res = await once(serveCreate, post('create', { sessionId, parent: '', title: '做一个东西' }))
   goalName = res.body.name
-  const file = readFileSync(join(root, 'thinking-tree', goalName), 'utf8')
+  const file = readFileSync(join(root, 'thinking-tree', 's-test', goalName), 'utf8')
   check('create writes front matter with a parent field', res.body.ok === true && /\nparent:/.test(file) && /status: pending/.test(file), {
     name: goalName,
   })
@@ -64,7 +64,7 @@ let childName
 {
   const res = await once(serveCreate, post('create', { sessionId, parent: goalName.replace(/\.md$/, ''), title: '第一条要求' }))
   childName = res.body.name
-  const shaped = shapeTree((await readTree(join(root, 'thinking-tree'))).nodes)
+  const shaped = shapeTree((await readTree(join(root, 'thinking-tree', 's-test'))).nodes)
   check('a child nests under its parent', shaped.roots.length === 1 && shaped.roots[0].children.length === 1, {
     roots: shaped.roots.length,
     children: shaped.roots[0]?.children.length,
@@ -76,8 +76,10 @@ let childName
   const other = 'session-other'
   const otherBefore = await once(serveTree, new Request(`${base}/tree?sessionId=${other}`))
   const mine = await once(serveTree, new Request(`${base}/tree?sessionId=${sessionId}`))
-  check('another conversation starts with its own empty chain', otherBefore.body.ok === true && otherBefore.body.nodes.length === 0, {
+  check('another conversation starts with its own empty chain', otherBefore.body.ok === true && otherBefore.body.nodes.length === 0 && otherBefore.body.folder !== mine.body.folder, {
     nodes: otherBefore.body.nodes.length,
+    ownFolder: mine.body.folder,
+    otherFolder: otherBefore.body.folder,
   })
   check('the owning conversation still sees its chain', mine.body.nodes.length === 2, { nodes: mine.body.nodes.length })
   const created = await once(serveCreate, post('create', { sessionId: other, parent: '', title: '另一个对话的目标' }))
@@ -93,7 +95,7 @@ let childName
 
 {
   const res = await once(serveSave, post('save', { sessionId, name: childName, content: '写好的一条要求\n第二行\n' }))
-  const node = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === childName)
+  const node = (await readTree(join(root, 'thinking-tree', 's-test'))).nodes.find(n => n.name === childName)
   check('saving a body keeps the front matter', res.body.ok === true && node.parent !== '' && node.body.includes('写好的一条要求'), {
     parent: node.parent,
     body: node.body.trim().split('\n')[0],
@@ -102,7 +104,7 @@ let childName
 
 {
   await once(serveTitle, post('title', { sessionId, name: childName, title: '点右侧按钮弹出侧边栏' }))
-  const node = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === childName)
+  const node = (await readTree(join(root, 'thinking-tree', 's-test'))).nodes.find(n => n.name === childName)
   check('renaming changes the title and keeps the body', node.title === '点右侧按钮弹出侧边栏' && node.body.includes('写好的一条要求'), {
     title: node.title,
   })
@@ -111,7 +113,7 @@ let childName
 {
   const good = await once(serveModel, post('model', { sessionId, name: childName, model: 'deepseek/deepseek-chat' }))
   const bad = await once(serveModel, post('model', { sessionId, name: childName, model: 'no-slash' }))
-  const node = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === childName)
+  const node = (await readTree(join(root, 'thinking-tree', 's-test'))).nodes.find(n => n.name === childName)
   check('a model route is stored and a malformed one is refused', good.body.ok && bad.status === 400 && node.model === 'deepseek/deepseek-chat', {
     model: node.model,
     invalidStatus: bad.status,
@@ -120,19 +122,19 @@ let childName
 
 {
   await once(serveStatus, post('status', { sessionId, name: childName, status: 'active' }))
-  const node = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === childName)
+  const node = (await readTree(join(root, 'thinking-tree', 's-test'))).nodes.find(n => n.name === childName)
   check('status is stored', node.status === 'active', null)
 }
 
 {
   await once(servePosition, post('position', { sessionId, name: childName, x: 401, y: 96 }))
-  const node = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === childName)
+  const node = (await readTree(join(root, 'thinking-tree', 's-test'))).nodes.find(n => n.name === childName)
   check('a pinned position round trips', node.x === 401 && node.y === 96, { x: node.x, y: node.y })
 }
 
 {
   const res = await once(serveArrange, post('arrange', { sessionId }))
-  const node = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === childName)
+  const node = (await readTree(join(root, 'thinking-tree', 's-test'))).nodes.find(n => n.name === childName)
   check('auto layout clears the pins', res.body.cleared >= 1 && node.x === undefined && node.y === undefined, {
     cleared: res.body.cleared,
   })
@@ -149,7 +151,7 @@ let childName
 
 {
   const res = await once(serveSelfCheck, post('selfcheck', { sessionId, mode: 'on' }))
-  const goal = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === goalName)
+  const goal = (await readTree(join(root, 'thinking-tree', 's-test'))).nodes.find(n => n.name === goalName)
   check('the self-check flag lands on the goal node', res.body.selfcheck === 'on' && goal.selfcheck === 'on', {
     goal: goal.selfcheck,
   })
@@ -164,13 +166,13 @@ let childName
 
 {
   const off = await once(serveSelfCheck, post('selfcheck', { sessionId, mode: 'off' }))
-  const goalOff = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === goalName)
+  const goalOff = (await readTree(join(root, 'thinking-tree', 's-test'))).nodes.find(n => n.name === goalName)
   check('stopping self-check never fakes a pass', off.body.selfcheck === 'off' && goalOff.selfcheck === 'off', {
     state: off.body.selfcheck,
     file: goalOff.selfcheck,
   })
   const pass = await once(serveSelfCheck, post('selfcheck', { sessionId, mode: 'pass' }))
-  const goalPassed = (await readTree(join(root, 'thinking-tree'))).nodes.find(n => n.name === goalName)
+  const goalPassed = (await readTree(join(root, 'thinking-tree', 's-test'))).nodes.find(n => n.name === goalName)
   check('only an explicit pass marks the goal passed', pass.body.selfcheck === 'passed' && goalPassed.selfcheck === 'passed', {
     state: pass.body.selfcheck,
     file: goalPassed.selfcheck,
@@ -179,7 +181,7 @@ let childName
 
 {
   const res = await once(serveDelete, post('delete', { sessionId, name: goalName, cascade: true }))
-  const left = readdirSync(join(root, 'thinking-tree'))
+  const left = readdirSync(join(root, 'thinking-tree', 's-test'))
   check('a cascade delete removes the subtree', res.body.deleted.length === 2 && !left.includes(goalName) && !left.includes(childName), {
     deleted: res.body.deleted,
     left,
