@@ -3,9 +3,9 @@
  *
  * Two surfaces, one state:
  *
- * - `shell.overlay` draws the button on the right edge of the window.
- * - `sidebar.right.pane.tab` draws the tree inside the right Sidebar, as the
- *   tab type `thinking-tree`.
+ * - A pill on the right edge of the window, mounted as plain DOM on
+ *   `document.body` so `position: fixed` reaches the real viewport.
+ * - The `thinking-tree` tab type of the right Sidebar, which is the panel.
  *
  * The tree itself lives on disk (`<workspace>/thinking-tree/*.md`). This module
  * only renders it and writes it back through the Host's JSON routes, so the
@@ -287,43 +287,11 @@ window.__ModuleLoader__.load({
 .dsh-tt-empty{display:flex;flex-direction:column;gap:8px;padding:16px 4px;color:var(--dsw-alias-label-secondary);align-items:flex-start}
 .dsh-tt-empty strong{color:var(--dsw-alias-label-primary);font-size:13px}
 .dsh-tt-error{color:var(--dsw-alias-state-error-primary);font-size:11.5px;padding:2px 0}
-.dsh-tt-edge{position:fixed;right:0;top:46%;transform:translateY(-50%);z-index:40;display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 5px;border:1px solid var(--dsw-alias-border-l1);border-right:none;border-radius:9px 0 0 9px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);cursor:pointer;box-shadow:-2px 0 10px rgba(0,0,0,.09);font-family:inherit;transition:background .14s,color .14s,padding-right .14s;pointer-events:auto}
-.dsh-tt-edge:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding-right:8px}
-.dsh-tt-edge-label{writing-mode:vertical-rl;font-size:10.5px;letter-spacing:.16em;line-height:1}
-.dsh-tt-edge:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 `
 
     /* ---------------------------------------------------------------- *
      * Small components
      * ---------------------------------------------------------------- */
-
-    /**
-     * Subscribe to a snapshot observable, tolerating a missing one.
-     * @param {object} observable - `{ getSnapshot, subscribe }`.
-     * @returns the current value, or undefined.
-     */
-    function useSnapshot(observable) {
-      const [value, setValue] = React.useState(() => readSnapshot(observable))
-      React.useEffect(() => {
-        if (observable === undefined || typeof observable.subscribe !== 'function') return undefined
-        const sync = () => setValue(readSnapshot(observable))
-        sync()
-        return observable.subscribe(sync)
-      }, [observable])
-      return value
-    }
-
-    /**
-     * Read one snapshot without subscribing.
-     * @param {object} observable - snapshot observable.
-     * @returns the value, or undefined.
-     */
-    function readSnapshot(observable) {
-      if (observable === undefined || observable === null) return undefined
-      if (typeof observable.getSnapshot === 'function') return observable.getSnapshot()
-      if (typeof observable === 'function') return observable()
-      return observable.value
-    }
 
     /**
      * A button that renders as a quiet text control.
@@ -350,23 +318,89 @@ window.__ModuleLoader__.load({
      * ---------------------------------------------------------------- */
 
     /**
-     * The button on the right edge of the window that opens the tree.
-     * @param {object} props - `{ ctx, t }`.
-     * @returns {object|null} React element.
+     * The component-local stylesheet, rendered by every component that needs it.
+     * @returns {object} React element.
      */
-    function EdgeButton(props) {
-      const { ctx, t } = props
-      const sidebar = typeof ctx.get === 'function' ? ctx.get('sidebarRight') : ctx.sidebarRight
-      const mounted = useSnapshot(sidebar === undefined ? undefined : sidebar.mounted)
-      if (sidebar !== undefined && mounted === undefined) return null
-      const open = () => {
+    function Styles() {
+      return h('style', null, CSS)
+    }
+
+    /**
+     * Mount the button on the right edge of the window.
+     *
+     * Deliberately not a slot entry: the shell draws overlay occupants inside a
+     * containing block, which traps `position: fixed` and lands the pill in the
+     * frame's top-left corner. Plain DOM appended to `document.body` resolves
+     * `fixed` against the real viewport, and the creating effect owns removal.
+     * @param {object} ctx - client plugin context.
+     * @param {Function} t - translator.
+     * @returns {Function} cleanup that removes the widget.
+     */
+    function mountEdgeButton(ctx, t) {
+      if (typeof document === 'undefined' || document.body === null) return () => undefined
+      for (const stale of Array.from(document.querySelectorAll('[data-dsh-thinking-tree="host"]'))) stale.remove()
+
+      const host = document.createElement('div')
+      host.setAttribute('data-dsh-thinking-tree', 'host')
+      host.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;pointer-events:none;z-index:60;display:flex;align-items:center;justify-content:flex-end'
+
+      // Focus ring only: everything else on the pill is inline, so it survives
+      // whatever the host does to its own stylesheets.
+      const sheet = document.createElement('style')
+      sheet.textContent = '[data-dsh-thinking-tree="edge"]:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}'
+
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.setAttribute('data-dsh-thinking-tree', 'edge')
+      button.setAttribute('aria-label', t('edgeLabel'))
+      button.title = t('edgeLabel')
+      button.style.cssText = [
+        'pointer-events:auto',
+        'display:flex',
+        'flex-direction:column',
+        'align-items:center',
+        'gap:5px',
+        'padding:9px 5px',
+        'border:1px solid var(--dsw-alias-border-l1)',
+        'border-right:none',
+        'border-radius:9px 0 0 9px',
+        'background:var(--dsw-alias-bg-layer-1)',
+        'color:var(--dsw-alias-label-secondary)',
+        'cursor:pointer',
+        'box-shadow:-2px 0 10px rgba(0,0,0,.12)',
+        'font-family:inherit',
+        'transition:background .14s,color .14s,padding-right .14s',
+      ].join(';')
+      button.innerHTML = [
+        '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">',
+        '<path d="M4 2.5v11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+        '<path d="M4 5.5h4.2a1.8 1.8 0 0 1 0 3.6H6.4a1.8 1.8 0 0 0 0 3.6H12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+        '<circle cx="12.2" cy="5.5" r="1.5" fill="currentColor"/>',
+        '</svg>',
+        '<span style="writing-mode:vertical-rl;font-size:10.5px;letter-spacing:.16em;line-height:1"></span>',
+      ].join('')
+      const label = button.querySelector('span')
+      if (label !== null) label.textContent = t('tabTitle')
+
+      const enter = () => {
+        button.style.background = 'var(--dsw-alias-bg-layer-2)'
+        button.style.color = 'var(--dsw-alias-label-primary)'
+        button.style.paddingRight = '8px'
+      }
+      const leave = () => {
+        button.style.background = 'var(--dsw-alias-bg-layer-1)'
+        button.style.color = 'var(--dsw-alias-label-secondary)'
+        button.style.paddingRight = '5px'
+      }
+      const click = () => {
+        const sidebar = typeof ctx.get === 'function' ? ctx.get('sidebarRight') : ctx.sidebarRight
         try {
-          if (typeof sidebar === 'object' && sidebar !== null && typeof sidebar.openTab === 'function') {
+          if (sidebar !== undefined && sidebar !== null && typeof sidebar.openTab === 'function') {
             sidebar.openTab(TAB_KIND)
             return
           }
         } catch {
-          /* fall through to revealing the column below */
+          /* fall through to revealing the column */
         }
         try {
           ctx.layout.openRightbar(true, false)
@@ -374,25 +408,20 @@ window.__ModuleLoader__.load({
           /* nothing else to try */
         }
       }
-      return h(
-        'button',
-        {
-          type: 'button',
-          className: 'dsh-tt-edge',
-          onClick: open,
-          title: t('edgeLabel'),
-          'aria-label': t('edgeLabel'),
-          'data-dsh-thinking-tree': 'edge',
-        },
-        h(
-          'svg',
-          { width: 15, height: 15, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
-          h('path', { d: 'M4 2.5v11', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
-          h('path', { d: 'M4 5.5h4.2a1.8 1.8 0 0 1 0 3.6H6.4a1.8 1.8 0 0 0 0 3.6H12', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
-          h('circle', { cx: 12.2, cy: 5.5, r: 1.5, fill: 'currentColor' }),
-        ),
-        h('span', { className: 'dsh-tt-edge-label' }, t('tabTitle')),
-      )
+      button.addEventListener('mouseenter', enter)
+      button.addEventListener('mouseleave', leave)
+      button.addEventListener('click', click)
+
+      host.appendChild(button)
+      document.body.appendChild(sheet)
+      document.body.appendChild(host)
+      return () => {
+        button.removeEventListener('mouseenter', enter)
+        button.removeEventListener('mouseleave', leave)
+        button.removeEventListener('click', click)
+        host.remove()
+        sheet.remove()
+      }
     }
 
     /* ---------------------------------------------------------------- *
@@ -628,7 +657,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'dsh-tt-root', 'data-dsh-thinking-tree': 'panel' },
-        h('style', null, CSS),
+        h(Styles),
         h(
           'div',
           { className: 'dsh-tt-head' },
@@ -719,10 +748,7 @@ window.__ModuleLoader__.load({
           (props) => h(TreePanel, { ...props, t }),
         )), 'thinking-tree: panel body')
 
-        ctx.effect(() => ctx.slots.inject('shell.overlay', () => ctx.slots.register(
-          { name: 'shell.overlay', id: 'thinking-tree-edge', order: 30 },
-          () => h(EdgeButton, { ctx, t }),
-        )), 'thinking-tree: edge button')
+        ctx.effect(() => mountEdgeButton(ctx, t), 'thinking-tree: edge button')
       },
     }
   },
