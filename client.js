@@ -795,6 +795,12 @@ window.__ModuleLoader__.load({
             label: t('tabTitle'),
           }),
         }).catch(() => undefined)
+        // Which Session is this window? The Host knows; guessing it from the
+        // inside is what left two conversations sharing one chain.
+        void fetch(new URL(`${API}/sessions`, document.baseURI))
+          .then(response => response.json())
+          .then(result => postDiag({ stage: 'sessions', items: result.items ?? [], ok: result.ok === true }))
+          .catch(() => undefined)
       } catch {
         /* diagnostics must never break mounting */
       }

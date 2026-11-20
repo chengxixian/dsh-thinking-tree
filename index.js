@@ -102,7 +102,8 @@ export function apply(ctx) {
     { path: `${ROUTE_PREFIX}/selfcheck`, methods: ['POST'], fetch: (request) => serveSelfCheck(ctx, request) },
     { path: `${ROUTE_PREFIX}/position`, methods: ['POST'], fetch: (request) => servePosition(ctx, request) },
     { path: `${ROUTE_PREFIX}/arrange`, methods: ['POST'], fetch: (request) => serveArrange(ctx, request) },
-    { path: `${ROUTE_PREFIX}/diag`, methods: ['POST'], fetch: (request) => serveDiag(request) },
+    { path: `${ROUTE_PREFIX}/diag`, methods: ['POST'], fetch: (request) => serveDiag(ctx, request) },
+    { path: `${ROUTE_PREFIX}/sessions`, methods: ['GET'], fetch: () => serveSessions(ctx) },
     { path: `${ROUTE_PREFIX}/delete`, methods: ['POST'], fetch: (request) => serveDelete(ctx, request) },
   ]
   for (const route of routes) {
@@ -657,6 +658,34 @@ async function readJson(request) {
 }
 
 /**
+ * Report the live Session list, so an outside observer can tell which Session a
+ * running window belongs to without guessing.
+ * @param ctx - Host context.
+ * @returns the compact Session rows.
+ */
+async function serveSessions(ctx) {
+  try {
+    const controller = ctx.get('sessionController')
+    if (controller === undefined || controller === null || typeof controller.list !== 'function') {
+      return json({ ok: false, error: 'no-session-controller' }, 500)
+    }
+    const listed = await controller.list({}, new AbortController().signal)
+    return json({
+      ok: true,
+      items: (listed?.items ?? []).map(item => ({
+        id: item.sessionId,
+        cwd: item.cwd ?? '',
+        running: item.running === true,
+        updatedAt: item.updatedAt ?? 0,
+        blank: item.blank === true,
+      })),
+    })
+  } catch (error) {
+    return json({ ok: false, error: 'list-failed', message: String(error?.message ?? error) }, 500)
+  }
+}
+
+/**
  * Serve the whole tree of one Session.
  * @param ctx - Host context.
  * @param request - `GET` with `sessionId`.
@@ -918,11 +947,33 @@ async function serveArrange(ctx, request) {
  * @param request - `POST` with any JSON body.
  * @returns the stored path.
  */
-async function serveDiag(request) {
+async function serveDiag(ctx, request) {
   const text = await request.text()
   const path = join(tmpdir(), 'thinking-tree-diag.json')
   try {
-    await writeFile(path, text === '' ? '{}' : text, 'utf8')
+    let payload = {}
+    try {
+      payload = text === '' ? {} : JSON.parse(text)
+    } catch {
+      payload = { raw: text }
+    }
+    // Always attach the live Session list: it is how an outside observer can
+    // tell which Session a window belongs to without guessing.
+    try {
+      const controller = ctx.get('sessionController')
+      if (controller !== undefined && controller !== null && typeof controller.list === 'function') {
+        const listed = await controller.list({}, new AbortController().signal)
+        payload.sessions = (listed?.items ?? []).map(item => ({
+          id: item.sessionId,
+          cwd: item.cwd ?? '',
+          running: item.running === true,
+          updatedAt: item.updatedAt ?? 0,
+        }))
+      }
+    } catch (error) {
+      payload.sessionsError = String(error?.message ?? error)
+    }
+    await writeFile(path, JSON.stringify(payload), 'utf8')
     return json({ ok: true, path })
   } catch (error) {
     return json({ ok: false, error: 'diag-failed', message: String(error?.message ?? error) }, 500)
