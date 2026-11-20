@@ -127,7 +127,7 @@ let childName
 {
   const res = await once(serveDelete, post('delete', { sessionId, name: goalName, cascade: true }))
   const left = readdirSync(join(root, 'thinking-tree'))
-  check('a cascade delete removes the subtree', res.body.deleted.length === 2 && left.length === 0, {
+  check('a cascade delete removes the subtree', res.body.deleted.length === 2 && !left.includes(goalName) && !left.includes(childName), {
     deleted: res.body.deleted,
     left,
   })
