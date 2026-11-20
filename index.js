@@ -14,6 +14,7 @@
  */
 import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -89,8 +90,11 @@ export function apply(ctx) {
     { path: `${ROUTE_PREFIX}/create`, methods: ['POST'], fetch: (request) => serveCreate(ctx, request) },
     { path: `${ROUTE_PREFIX}/status`, methods: ['POST'], fetch: (request) => serveStatus(ctx, request) },
     { path: `${ROUTE_PREFIX}/title`, methods: ['POST'], fetch: (request) => serveTitle(ctx, request) },
+    { path: `${ROUTE_PREFIX}/model`, methods: ['POST'], fetch: (request) => serveModel(ctx, request) },
+    { path: `${ROUTE_PREFIX}/models`, methods: ['GET'], fetch: () => serveModels(ctx) },
     { path: `${ROUTE_PREFIX}/position`, methods: ['POST'], fetch: (request) => servePosition(ctx, request) },
     { path: `${ROUTE_PREFIX}/arrange`, methods: ['POST'], fetch: (request) => serveArrange(ctx, request) },
+    { path: `${ROUTE_PREFIX}/diag`, methods: ['POST'], fetch: (request) => serveDiag(request) },
     { path: `${ROUTE_PREFIX}/delete`, methods: ['POST'], fetch: (request) => serveDelete(ctx, request) },
   ]
   for (const route of routes) {
@@ -145,6 +149,61 @@ function folderOf(ctx, sessionId) {
 /* ------------------------------------------------------------------ *
  * Front matter
  * ------------------------------------------------------------------ */
+
+/**
+ * Choose the model that implements one node, or clear it to inherit.
+ * @param ctx - Host context.
+ * @param request - `POST` `{ sessionId, name, model }`; `provider/id` or empty.
+ * @returns the model receipt.
+ */
+async function serveModel(ctx, request) {
+  const input = await readJson(request)
+  if (input === undefined) return json({ ok: false, error: 'bad-body' }, 400)
+  const name = safeName(input.name)
+  if (name === undefined) return json({ ok: false, error: 'bad-name' }, 400)
+  const model = typeof input.model === 'string' ? input.model.trim().slice(0, 160) : ''
+  if (model !== '' && !model.includes('/')) return json({ ok: false, error: 'bad-model', message: 'expects provider/model' }, 400)
+  const folder = folderOf(ctx, input.sessionId)
+  if (folder.error !== undefined) return json({ ok: false, ...folder }, 400)
+  try {
+    const path = join(folder.dir, name)
+    let text = await readFile(path, 'utf8')
+    text = writeField(text, 'model', model)
+    text = writeField(text, 'updated', new Date().toISOString())
+    await writeFile(path, text, 'utf8')
+    return json({ ok: true, model })
+  } catch (error) {
+    return json({ ok: false, error: 'model-failed', message: String(error?.message ?? error) }, 500)
+  }
+}
+
+/** Catalog cached for one minute: provider listing is not free. */
+const modelCache = { at: 0, value: undefined }
+
+/**
+ * List the model routes this Host can dispatch to.
+ * @param ctx - Host context.
+ * @returns providers and their advertised models.
+ */
+async function serveModels(ctx) {
+  const now = Date.now()
+  if (modelCache.value !== undefined && now - modelCache.at < 60_000) return json({ ok: true, ...modelCache.value })
+  const llm = ctx.get('llm')
+  const providers = typeof llm?.listProviders === 'function' ? llm.listProviders() : []
+  const models = []
+  for (const provider of providers) {
+    try {
+      const advertised = await llm.listModels(provider.id)
+      for (const model of advertised) models.push({ provider: provider.id, id: model.id, name: model.name || model.id })
+    } catch {
+      // A provider with no reachable endpoint simply contributes nothing.
+    }
+  }
+  const value = { providers: providers.map(provider => ({ id: provider.id, name: provider.name || provider.id })), models }
+  modelCache.at = now
+  modelCache.value = value
+  return json({ ok: true, ...value })
+}
 
 /**
  * Read a front matter number, treating blanks as "not pinned".
@@ -298,6 +357,7 @@ async function readTree(dir) {
       title: (typeof data.title === 'string' && data.title !== '' ? data.title : firstHeading(body) || fallback),
       status: STATUSES.includes(data.status) ? data.status : 'pending',
       body: body.trimStart(),
+      model: typeof data.model === 'string' ? data.model : '',
       x: pinnedX,
       y: pinnedY,
       mtime: info.mtimeMs,
@@ -418,6 +478,7 @@ async function serveTree(ctx, request) {
         title: node.title,
         status: node.status,
         body: node.body,
+        model: node.model,
         depth: node.depth,
         children: node.children.map(child => child.id),
         mtime: node.mtime,
@@ -605,6 +666,26 @@ async function serveArrange(ctx, request) {
     return json({ ok: true, cleared })
   } catch (error) {
     return json({ ok: false, error: 'arrange-failed', message: String(error?.message ?? error) }, 500)
+  }
+}
+
+/**
+ * Store a browser-side diagnostic snapshot in the temp directory.
+ *
+ * The client cannot log to the Host's stdout, so this is how a rendering
+ * failure is observed from outside: the browser posts what it measured and the
+ * payload lands in a file a shell can read.
+ * @param request - `POST` with any JSON body.
+ * @returns the stored path.
+ */
+async function serveDiag(request) {
+  const text = await request.text()
+  const path = join(tmpdir(), 'thinking-tree-diag.json')
+  try {
+    await writeFile(path, text === '' ? '{}' : text, 'utf8')
+    return json({ ok: true, path })
+  } catch (error) {
+    return json({ ok: false, error: 'diag-failed', message: String(error?.message ?? error) }, 500)
   }
 }
 

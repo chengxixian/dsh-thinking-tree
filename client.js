@@ -70,6 +70,9 @@ window.__ModuleLoader__.load({
       fit: 'Fit',
       hint: 'Click a node to edit it · hold the left button on a node to move it · wheel to zoom',
       nodeTitle: 'Title',
+      nodeModel: 'Model',
+      inherit: 'Inherit the session model',
+      modelEmpty: 'No model configured',
       expandText: 'Show the whole text',
       collapseText: 'Collapse',
       arrange: 'Auto layout',
@@ -111,6 +114,9 @@ window.__ModuleLoader__.load({
       fit: '适应',
       hint: '点节点改 · 左键长按拖动块 · 滚轮缩放',
       nodeTitle: '标题',
+      nodeModel: '模型',
+      inherit: '跟随会话模型',
+      modelEmpty: '未配置模型',
       expandText: '展开全文',
       collapseText: '收起',
       arrange: '自动排列',
@@ -552,6 +558,31 @@ window.__ModuleLoader__.load({
       host.appendChild(button)
       document.body.appendChild(sheet)
       document.body.appendChild(host)
+      // Evidence for a rendering problem the browser console would hold.
+      try {
+        const rect = host.getBoundingClientRect()
+        const computed = window.getComputedStyle(host)
+        void fetch(new URL(`${API}/diag`, document.baseURI), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            at: new Date().toISOString(),
+            stage: 'mounted',
+            bodyChildren: document.body.children.length,
+            hostInBody: document.body.contains(host),
+            rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
+            display: computed.display,
+            zIndex: computed.zIndex,
+            visibility: computed.visibility,
+            opacity: computed.opacity,
+            buttonRect: button.getBoundingClientRect().toJSON(),
+            viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
+            label: t('tabTitle'),
+          }),
+        }).catch(() => undefined)
+      } catch {
+        /* diagnostics must never break mounting */
+      }
       return () => {
         button.removeEventListener('click', click)
         host.remove()
@@ -562,6 +593,16 @@ window.__ModuleLoader__.load({
     /* ---------------------------------------------------------------- *
      * Mind map
      * ---------------------------------------------------------------- */
+
+    /**
+     * Shorten `provider/model` to what fits in a node's corner label.
+     * @param {string} route - the stored model route.
+     * @returns {string} the model id, cut to 14 characters.
+     */
+    function shortModel(route) {
+      const id = String(route).split('/').pop() || String(route)
+      return id.length > 14 ? `${id.slice(0, 13)}…` : id
+    }
 
     /**
      * Stroke colour of one status.
@@ -614,8 +655,13 @@ window.__ModuleLoader__.load({
             },
             // Hold the left button on a block to move it; the position is
             // written to the node's front matter when the button is released.
+            // Left press moves the block; a right click expands its full text.
             // The press is swallowed here so the canvas does not also pan.
-            onContextMenu: event => event.preventDefault(),
+            onContextMenu: (event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              onToggleExpand(box.node.name)
+            },
             onMouseDown: (event) => {
               if (event.button !== 0) return
               event.preventDefault()
@@ -671,7 +717,7 @@ window.__ModuleLoader__.load({
             fontSize: 8.5,
             opacity: 0.75,
             style: { userSelect: 'none', letterSpacing: '.08em' },
-          }, kind),
+          }, box.node.model ? `${kind} · ${shortModel(box.node.model)}` : kind),
           box.toggle
             ? h(
               'g',
@@ -738,6 +784,16 @@ window.__ModuleLoader__.load({
       const [zoom, setZoom] = React.useState(1)
       const [moved, setMoved] = React.useState({})
       const [expanded, setExpanded] = React.useState(() => new Set())
+      const [catalog, setCatalog] = React.useState({ models: [] })
+
+      // The model catalog is the Host's real dispatch table, fetched once per mount.
+      React.useEffect(() => {
+        let alive = true
+        void call('models')
+          .then((payload) => { if (alive) setCatalog({ models: Array.isArray(payload.models) ? payload.models : [] }) })
+          .catch(() => undefined)
+        return () => { alive = false }
+      }, [])
       const signature = React.useRef('')
       const selectedRef = React.useRef(null)
       selectedRef.current = selected
@@ -1067,6 +1123,29 @@ window.__ModuleLoader__.load({
                   if (event.key === 'Escape') closeDrawer()
                 },
               }),
+            ),
+            h(
+              'div',
+              { className: 'dsh-tt-row' },
+              h('span', { className: 'dsh-tt-meta', style: { whiteSpace: 'nowrap' } }, t('nodeModel')),
+              h(
+                'select',
+                {
+                  className: 'dsh-tt-input',
+                  value: selectedNode.model || '',
+                  onChange: event => void mutate('model', { name: selectedNode.name, model: event.target.value }),
+                },
+                h('option', { value: '' }, t('inherit')),
+                // A stored route that the catalog no longer advertises stays selectable.
+                selectedNode.model && !catalog.models.some(model => `${model.provider}/${model.id}` === selectedNode.model)
+                  ? h('option', { value: selectedNode.model }, selectedNode.model)
+                  : null,
+                catalog.models.map(model => h(
+                  'option',
+                  { key: `${model.provider}/${model.id}`, value: `${model.provider}/${model.id}` },
+                  `${model.name} · ${model.provider}`,
+                )),
+              ),
             ),
             h('textarea', {
               className: 'dsh-tt-editor',
