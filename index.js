@@ -123,6 +123,9 @@ export function apply(ctx) {
  * @returns the flat node list, whether the folder exists, and a change signature.
  */
 export { folderOf, parseFrontMatter, readTree, safeName, shapeTree, writeField }
+export {
+  serveArrange, serveCreate, serveDelete, serveModel, servePosition, serveSave, serveSelfCheck, serveStatus, serveTitle, serveTree,
+}
 
 /**
  * Resolve the workspace root of one Session.

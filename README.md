@@ -6,7 +6,7 @@ English | [中文](README.zh.md)
 
 ![icon](icon.svg)
 
-![A five-tier thinking tree: goal, requirements, plans, routes and steps, joined by curved links](docs/preview.png)
+![The thinking-tree panel: the goal on the left, requirements, plans, routes and steps branching right, joined by curved links](docs/preview.png)
 
 ## What it looks like
 
