@@ -1,118 +1,138 @@
+<div align="center">
+
+<img src="icon.svg" width="92" alt="thinking-tree 图标">
+
 # dsh-thinking-tree
 
-把当前任务的**树形思考链**显示在 DeepSeek Harness 的右侧边栏里，并且一个块一份 Markdown 落在工作区文件夹里。
+**在 DeepSeek Harness 右侧栏里画出一棵实时的思维链树——底层就是你随时能改的 Markdown。**
 
-[English](README.md) | 中文
+[![License](https://img.shields.io/github/license/chengxixian/dsh-thinking-tree?color=22c55e)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.0.0-3b82f6)](package.json)
+[![Tests](https://img.shields.io/badge/tests-30%20passing-22c55e)](test)
+[![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-111827)](https://github.com/deepseek-ai)
+[![Skills](https://img.shields.io/badge/skills-3-8b5cf6)](#三个技能)
 
-![icon](icon.svg)
+[English](README.md) · [插件详情](docs/DETAIL.zh.md)
 
-![思考链面板：左边是目标，往右依次是要求、方案、技术路线、步骤，用曲线连接](docs/preview.png)
+</div>
 
-## 长什么样
+<img src="docs/preview.png" alt="思考链面板：左侧是目标，往右依次是要求、方案、技术路线、步骤，顶部有自检状态条">
 
-```
-┌ 右侧边栏 ─────────────────────────┐
-│ ● 做一个树形思考链插件        [目标] │   ← 最上面：目标
-│   实时显示、可编辑、md 落盘          │
-│   ├ ● 技术路线：Host 路由 + 技能  [路线] │   ← 中间：路线
-│   │   用什么实现、怎么验证            │
-│   │   ├ ● 写 /api/thinking-tree  [步骤] │   ← 最下面：具体做什么
-│   │   └ ● 面板轮询 1.5s          [步骤] │
-│   └ ● 视觉风格：跟随主题 token   [路线] │
-└──────────────────────────────────┘
-```
+---
 
-窗口右边缘有一个窄按钮，点一下就从右侧弹出侧边栏并切到思考链标签页；这个标签页在侧边栏的引导页里也有一张卡片。
+## 它是什么
 
-这棵树不是聊天记录的另一种排版，它是一个文件夹——**每个对话一个子目录**：
+一个 DSH 插件：把一件多步骤的活变成**看得见的思考链**。agent 边做边维护它，你随时能改。
 
-```
-<工作区>/thinking-tree/
-└── s-4a0fbba9/                → 这个对话的树（目录名 = 会话 id 前 8 位）
-    ├── 00-goal.md             → 目标
-    ├── 01-tech-route.md       → 路线
-    ├── 01-1-host-route.md     → 步骤
-    └── 02-visual-style.md     → 路线
-```
+- **上面是目标，下面是活。** `GOAL → REQ → PLAN → ROUTE → STEP`，用曲线连成思维导图。
+- **每个块就是一个 Markdown 文件。** 点开就能改；agent 动手前会重读文件夹，所以你的修改优先。
+- **实时的。** 面板每 1.5 秒左右重读一次文件夹，agent 边写你边看见。
 
-分目录是为了隔离：早期所有对话共用一个平铺文件夹时，别的对话的 agent 写一个 `parent: 00-goal` 就会把节点挂到你的树上。现在读接口只读自己那个子目录，旧树在首次读取时按根节点的 `session:` 自动迁移。以 `_` 开头的目录（如 `_orphaned/`）会被跳过。
+## 为什么要落在文件上
 
-树的结构只由每个文件 front matter 里的 `parent` 决定，文件名只是给人看的。**深度就是层级**：深度 0 是目标，深度 1 是路线，深度 2 及更深是具体步骤。
+- **用户能改计划。** 点块改正文、改状态（待办 → 进行中 → 完成 → 受阻）、加子节点、删一棵子树，都是直接改文件。
+- **agent 读的是同一份东西。** 附带技能 `thinking-tree` 规定：多步骤任务开始时建树、做的过程中持续更新，最关键的一条是**动手实现前重读文件夹，按你改的做，而不是按它记忆里的旧方案做**。
+- **收到要求先拆解，且不靠"想起来"。** 五问（要什么 / 做成什么样 / 拆成几块 / 每块怎么做 / 每块怎么验证）注册进了系统提示，**每一轮都在上下文里**，不需要模型主动加载技能；`requirement-breakdown` 技能只是这套规则的详细手册。
+- **面板是实时的。** 打开时每 1.5 秒左右重读一次，正在编辑或正在缩放时暂停刷新。
 
-## 为什么是一堆文件
+## 功能
 
-- **用户能改计划。** 每个块在面板里就是一段 Markdown：点开卡片改正文、保存。状态点循环"待办 → 进行中 → 完成 → 受阻"；可以加子节点、删一棵子树。
-- **agent 读的是同一份东西。** 附带技能 `thinking-tree` 规定：多步骤任务开始时建树、做的过程中持续更新，最关键的一条是**动手实现前重读文件夹，按用户改的做，而不是按它自己记忆里的旧方案做**。
-- **收到要求先拆解，且不靠"想起来"。** 拆解规则（五问：要什么 / 做成什么样 / 拆成几块 / 每块怎么做 / 每块怎么验证）注册进了系统提示，**每一轮都在上下文里**，所以不需要模型主动加载技能才生效；`requirement-breakdown` 技能只是这套规则的详细手册。自检另有 `thinking-tree-selfcheck` 技能，由面板按钮触发。
-- **面板是实时的。** 打开时每 1.5 秒左右重读一次文件夹，agent 边写边显示；正在编辑时暂停刷新。
+| | |
+|---|---|
+| 🗺 **是树不是列表** | 从左到右分层布局、贝塞尔连线、状态点、每层不同配色。滚轮缩放（锚定指针）、左键长按拖块、拖画布平移。 |
+| ✏️ **什么都能改** | 标题、正文、状态、模型、加子节点、删子树——全在面板抽屉里。保存不会冲掉 front matter。 |
+| 📄 **纯 Markdown** | 一个块一个文件，放在 `<工作区>/thinking-tree/s-<id>/`。能排序、能 grep、能 diff、归你所有。 |
+| 🔒 **每个对话一棵树** | 每个对话一个子目录，别的对话的节点串不进来；旧的平铺树首次读取时自动迁移。 |
+| 🧪 **自检循环** | 点标题栏的红色按钮开始一轮核对，之后每轮结束自动继续（最多 40 轮），直到目标被证据证明或你手动停。 |
+| 🧠 **节点级模型** | 给某个块写 `provider/model`，agent 就把这个块派给那个模型做。 |
+| 🗂 **正文折叠** | 卡片默认只显示标题 + 一行摘要；点 ▾ 在卡片内展开整段正文（最多 16 行）。 |
+| 🌐 **中英双语** | 界面文案跟随 DSH 的语言设置。 |
 
 ## 安装
 
-前提：你的 DeepSeek Harness 带右侧边栏（`@deepseek-ai/dsh-client-ui-sidebar-right`）。
+前提：你的 DSH 带右侧边栏（`@deepseek-ai/dsh-client-ui-sidebar-right`）。
 
 1. **插件 → 添加插件**，选这个目录（或克隆下来的仓库）。
 2. 如果 `thinking-tree` 这个 bundle 没有自动启用，手动启用。
-3. 打开一个会话，点窗口右边缘的按钮。
+3. 打开一个会话，点窗口右边缘的胶囊按钮。
 
-在 agent 会话里也可以直接用 `plugin_manager` 装本地目录：
+> 胶囊按钮可以上下拖动，松手后位置会被记住。
 
-```json
-{ "action": "install_bundle", "target": "C:\\path\\to\\dsh-thinking-tree" }
+## 三个技能
+
+| 技能 | 什么时候生效 |
+|---|---|
+| `thinking-tree` | 常驻可用。定义磁盘契约、五层结构、正文怎么写、长任务怎么不跑偏。 |
+| `requirement-breakdown` | 常驻拆解规则的详细手册（五问、粒度、节点模板、动手前自检清单）。 |
+| `thinking-tree-selfcheck` | 自检按钮触发。一轮核对：逐条拿证据，缺什么补什么，最后才宣布通过。 |
+
+前两条同时写进了**系统提示上下文**，所以每一步都在，不依赖模型主动加载技能。
+
+## 文件格式
+
+```
+<工作区>/thinking-tree/
+└── s-4a0fbba9/                → 这个对话（会话 id 前 8 位）
+    ├── 00-goal.md             → 目标
+    ├── 01-tech-route.md       → 方案
+    ├── 01-1-host-route.md     → 步骤
+    └── 02-visual-style.md     → 方案
 ```
 
-## 怎么用
-
-1. 提一个多步骤的任务。agent 会建出 `thinking-tree/`，写目标、2–6 条路线、以及路线下面的步骤。
-2. 打开面板，看它一边做一边长。
-3. 不同意某条路线就在面板里改、保存，然后让 agent 继续。它会重读文件夹并按你的版本做。
-4. agent 还没建树时也可以自己起：空面板里有"创建目标"的输入框。
-
-## 节点文件格式
+树形由 front matter 里的 `parent` 决定，文件名只是给人看的。**深度就是层级。**
 
 ```markdown
 ---
-id: 01-tech-route
+id: 01-req-panel
 parent: 00-goal
-order: 1
-title: 技术路线：Host 路由 + 技能
-status: active
-updated: 2026-01-01T00:00:00.000Z
+order: 0
+title: 点右侧按钮弹出侧边栏
+status: pending
+model: ""
+x: ""
+y: ""
+session: session-4a0fbba9-eba
 ---
 
-# 技术路线
+点击窗口右边缘的按钮，从右边滑出侧边栏。
 
-正文用 Markdown 随便写，front matter 以下都是你的。
+## 做成什么样
+面板出现在右侧栏，宽度可拖，显示整棵树。
+
+## 怎么验证
+点按钮 → 面板出现；拖动分隔条 → 宽度变化并记住。
 ```
 
-| 字段 | 含义 |
-|---|---|
-| `id` | 树内的稳定标识，默认是去掉 `.md` 的文件名。别的节点指向它之后就别改了。 |
-| `parent` | 父节点的 `id`；留空（或 `null`）表示根节点。 |
-| `order` | 同级排序，升序。 |
-| `title` | 卡片标题。缺省时取正文第一个标题，再缺省取文件名。 |
-| `status` | `pending` · `active` · `done` · `blocked`。 |
-| `updated` | ISO 时间戳，面板每次保存都会重写它。 |
+## 用法
 
-以 `_` 开头的文件会被面板忽略，`_index.md` 适合放给人看的说明。
+- **打开面板**：点右边缘胶囊，或右侧栏的「思考链」标签页。
+- **改一个块**：点它 → 抽屉打开，能改标题、状态、模型和正文。
+- **挪一个块**：左键长按拖动，位置写进 `x`/`y`。
+- **展开正文**：点卡片右下 ▾。
+- **自检**：点红色按钮 → 变成「自检中 · 第 N 轮」，面板顶部出现带 `已完成/总数` 的状态条。
+- **节点级模型**：在抽屉里选，agent 会用 `subagent` 把这个块派给那个模型。
 
-## 实现结构
+## 结构
 
 | 文件 | 作用 |
 |---|---|
-| `index.js` | Host 半边：注册打包技能，并在 Connection 层注册 `/api/thinking-tree` 下的五个 JSON 路由（`tree` / `save` / `create` / `status` / `delete`）；从会话 header 解析工作区目录。 |
-| `client.js` | 浏览器半边：注册右侧边栏的 `thinking-tree` 标签页类型、它的面板主体，以及 `shell.overlay` 里右边缘的按钮；渲染 Markdown 子集、编辑节点、轮询变化。 |
-| `assets/thinking-tree/SKILL.md` | agent 加载的技能正文。 |
-| `locale/*.json` | 插件管理里的标题、描述、详情页。 |
-| `docs/DETAIL.md` | 插件管理里显示的详情页。 |
+| `index.js` | Host 半边：注册三个技能 provider、系统提示强制规则、自检循环，以及 `/api/thinking-tree` 下的 JSON 路由（`tree`/`save`/`create`/`status`/`title`/`model`/`models`/`position`/`arrange`/`delete`/`selfcheck`/`sessions`/`diag`）。 |
+| `client.js` | 浏览器半边：右侧栏标签页、思维导图布局与渲染、抽屉、可拖胶囊、自检状态条。 |
+| `assets/*/SKILL.md` | 技能正文。 |
+| `test/*.mjs` | `node test/api.test.mjs`（写入链路 20 项）与 `node test/layout.test.mjs`（几何 10 项）。 |
 
-Host 端不缓存任何东西：每个请求都重新读文件夹，所以文件确实是唯一事实来源。
+```bash
+node test/api.test.mjs      # 20/20
+node test/layout.test.mjs   # 10/10
+```
 
-## 限制
+布局测试直接从 `client.js` 里加载几何代码，所以断言的是发行代码本身，不是副本。
 
-- 绑定在会话的工作区目录上；解析不出工作区的会话显示空面板。
-- Markdown 渲染器只覆盖标题、列表、行内代码与代码块、引用、强调、链接，不含表格、图片和原始 HTML。
-- 树不在会话日志里，它是工作区里的文件；每个对话一个子目录（`thinking-tree/s-xxxx/`），互不可见。
-- 期望只有一个目标节点，多出来的根节点会作为额外的顶层卡片显示。
+## 已知限制
+
+- 面板依赖右侧栏插件，没有它标签页无法停靠。
+- 自检循环最多 40 轮，之后会在目标节点留下 `selfcheck: stopped`。
+- 卡片展开最多显示 16 行正文；完整内容在文件里。
 
 ## 许可证
 

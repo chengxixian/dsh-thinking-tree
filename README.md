@@ -1,30 +1,74 @@
+<div align="center">
+
+<img src="icon.svg" width="92" alt="thinking-tree icon">
+
 # dsh-thinking-tree
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that shows the current task's **chain of thought as a tree** in the right sidebar, and keeps that tree on disk as one Markdown file per block.
+**A tree-shaped chain of thought in the DeepSeek Harness right sidebar — stored as plain Markdown you can edit.**
 
-English | [中文](README.zh.md)
+[![License](https://img.shields.io/github/license/chengxixian/dsh-thinking-tree?color=22c55e)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.0.0-3b82f6)](package.json)
+[![Tests](https://img.shields.io/badge/tests-30%20passing-22c55e)](test)
+[![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-111827)](https://github.com/deepseek-ai)
+[![Skills](https://img.shields.io/badge/skills-3-8b5cf6)](#the-three-skills)
 
-![icon](icon.svg)
+[中文说明](README.zh.md) · [Plugin details](docs/DETAIL.md)
 
-![The thinking-tree panel: the goal on the left, requirements, plans, routes and steps branching right, joined by curved links](docs/preview.png)
+</div>
 
-## What it looks like
+<img src="docs/preview.png" alt="The thinking-tree panel: goal on the left, requirements, plans, routes and steps branching to the right, with a self-check status strip on top">
 
-```
-┌ 右侧边栏 ─────────────────────────┐
-│ ● 做一个树形思考链插件        [目标] │   ← 最上面：目标
-│   实时显示、可编辑、md 落盘          │
-│   ├ ● 技术路线：Host 路由 + 技能  [路线] │   ← 中间：路线
-│   │   用什么实现、怎么验证            │
-│   │   ├ ● 写 /api/thinking-tree  [步骤] │   ← 最下面：具体做什么
-│   │   └ ● 面板轮询 1.5s          [步骤] │
-│   └ ● 视觉风格：跟随主题 token   [路线] │
-└──────────────────────────────────┘
-```
+---
 
-A slim button sits on the right edge of the window. Clicking it opens the right Sidebar on the thinking-tree tab; the tab is also offered in the Sidebar guide.
+## What it is
 
-The tree is not a chat transcript. It is a folder — one subfolder per conversation:
+A DSH plugin that turns a long task into a **visible tree of thought** the agent maintains while it works, and that you can edit at any time.
+
+- **Goal at the top, work at the bottom.** `GOAL → REQ → PLAN → ROUTE → STEP`, drawn as a mind map with curved links.
+- **Every block is a Markdown file.** Click it in the panel to rewrite it; the agent re-reads the folder before it implements, so your edit wins.
+- **Live.** The panel polls the folder about every 1.5 s; whatever the agent writes shows up while it is still working.
+
+## Why a folder of files
+
+- **The user can edit the plan.** Click a card, change the text, save. Status cycles pending → in progress → done → blocked. Add a child, delete a subtree.
+- **The agent reads the same thing.** The bundled `thinking-tree` skill tells it to build the tree at the start of a multi-step task, keep it updated while it works, and **re-read the folder before implementing instead of trusting its memory of the plan**.
+- **A requirement is decomposed before any work starts — without relying on the model remembering.** The five-question mandate (what it is / what "done" looks like / which independent pieces / how each is built / how each is verified) is registered as a system-prompt context, so it is in the model's context **every step**; the `requirement-breakdown` skill is only the detailed manual behind that rule.
+- **The panel is live.** It re-reads the folder about every 1.5 s while open, so the tree grows as the agent writes. Editing pauses the refresh.
+
+## Features
+
+| | |
+|---|---|
+| 🗺 **Mind map, not a list** | Left-to-right layout, bezier links, status dots, per-tier colours. Wheel zooms (pointer-anchored), left-drag moves a block, drag the canvas to pan. |
+| ✏️ **Edit anything** | Title, body, status, model, add child, delete subtree — all from the panel drawer. Saves keep the front matter intact. |
+| 📄 **Plain Markdown** | One file per block under `<workspace>/thinking-tree/s-<id>/`. Sortable, greppable, diffable, yours. |
+| 🔒 **Per-conversation trees** | Each conversation has its own subfolder; another conversation's nodes cannot leak in. Older flat trees migrate on first read. |
+| 🧪 **Self-check loop** | A red button in the header starts a verifying round; every finished turn starts the next one (40 rounds max) until the goal is proven or stopped. |
+| 🧠 **Per-node model** | Give any block `provider/model` and the agent delegates that block to that model. |
+| 🗂 **Collapsed detail** | Cards show a title and one line; click ▾ to expand the whole body (up to 16 lines) inside the card. |
+| 🌐 **Bilingual UI** | English and Chinese strings follow the DSH locale. |
+
+## Install
+
+Requires a DSH build with the right sidebar (`@deepseek-ai/dsh-client-ui-sidebar-right`).
+
+1. **Plugins → Add plugin**, point at this directory (or a clone of this repo).
+2. Enable the `thinking-tree` bundle if it did not enable itself.
+3. Open a conversation and click the pill on the right edge of the window.
+
+> The pill can be dragged up and down; its position is remembered.
+
+## The three skills
+
+| Skill | When it fires |
+|---|---|
+| `thinking-tree` | Always available. Defines the on-disk contract, the five tiers, how to write a block, how to keep a long task on the rails. |
+| `requirement-breakdown` | The manual behind the always-on decomposition mandate (five questions, granularity rules, node template, pre-work checklist). |
+| `thinking-tree-selfcheck` | Sent by the self-check button. One verification round: prove each requirement with evidence, fix what is missing, only then declare it passed. |
+
+The first two are reinforced by **system-prompt contexts**, so the rules apply on every step even when the model never loads a skill.
+
+## File format
 
 ```
 <workspace>/thinking-tree/
@@ -35,85 +79,61 @@ The tree is not a chat transcript. It is a folder — one subfolder per conversa
     └── 02-visual-style.md     → approach
 ```
 
-The subfolders exist for isolation: when every conversation shared one flat folder, another conversation's agent writing `parent: 00-goal` landed inside your tree. The API now reads only its own subfolder, and a tree from an older install is migrated on first read using the `session:` on its root. Directories starting with `_` (such as `_orphaned/`) are skipped.
+`parent` in the front matter decides the shape; file names are for humans. Depth *is* the tier.
 
-`parent` in each file's front matter decides the shape; file names are for humans. Depth *is* the tier: depth 0 is the goal, depth 1 is the approach, depth 2 and deeper are the concrete steps.
+```markdown
+---
+id: 01-req-panel
+parent: 00-goal
+order: 0
+title: 点右侧按钮弹出侧边栏
+status: pending
+model: ""
+x: ""
+y: ""
+session: session-4a0fbba9-eba
+---
 
-## Why a folder of files
+点击窗口右边缘的按钮，从右边滑出侧边栏。
 
-- **The user can edit the plan.** Every block is plain Markdown in the panel: click a card, change the text, save. Status cycles pending → in progress → done → blocked. Add a child, delete a subtree.
-- **The agent reads the same thing.** A bundled skill (`thinking-tree`) tells it to build the tree at the start of a multi-step task, to keep updating it while it works, and — the important part — to **re-read the folder before implementing and follow the user's edits instead of its own memory of the plan**.
-- **A requirement is decomposed before any work starts — without relying on the model remembering.** The five-question mandate (what it is / what "done" looks like / which independent pieces / how each is built / how each is verified) is registered as a system-prompt context, so it is in the model's context **every step**; the `requirement-breakdown` skill is only the detailed manual behind that rule. Self-check rounds come from the panel button and the `thinking-tree-selfcheck` skill.
-- **The panel is live.** It re-reads the folder about every 1.5 seconds while open, so the tree grows as the agent writes. Editing pauses the refresh.
+## 做成什么样
+面板出现在右侧栏，宽度可拖，显示整棵树。
 
-## Install
-
-Requirements: a DeepSeek Harness installation whose Web UI runs the right Sidebar (`@deepseek-ai/dsh-client-ui-sidebar-right`).
-
-1. **Plugins → Add plugin**, and pick this directory (or the cloned repo).
-2. Enable the `thinking-tree` bundle if it is not enabled yet.
-3. Open a Session, click the button on the right edge of the window.
-
-From an agent session you can also install the local directory with the `plugin_manager` tool:
-
-```json
-{ "action": "install_bundle", "target": "C:\\path\\to\\dsh-thinking-tree" }
+## 怎么验证
+点按钮 → 面板出现；拖动分隔条 → 宽度变化并记住。
 ```
 
 ## Usage
 
-1. Ask for something multi-step. The agent creates `thinking-tree/`, writes the goal, two to six approach nodes, and the steps under them.
-2. Open the panel and watch it fill in while the agent works.
-3. Disagree with a route? Edit it in the panel, save, and tell the agent to continue. It re-reads the folder and follows your version.
-4. Start it yourself when the agent has not: the empty panel has a "create goal" field.
+- **Open the panel**: click the pill on the right edge (or the `思考链` tab in the right sidebar).
+- **Edit a block**: click it → the drawer opens with title, status, model and body.
+- **Move a block**: hold the left button and drag; the position is written to `x`/`y`.
+- **Expand detail**: click ▾ at the bottom-right of a card.
+- **Self-check**: click the red button. It turns into `自检中 · 第 N 轮` and the panel shows a status strip with `done/total` requirements.
+- **Per-node model**: set it in the drawer; the agent will delegate that block with `subagent`.
 
-## Node file format
-
-```markdown
----
-id: 01-tech-route
-parent: 00-goal
-order: 1
-title: Technical route: host route + skill
-status: active
-updated: 2026-01-01T00:00:00.000Z
----
-
-# Technical route
-
-Body Markdown. Everything below the front matter is yours to write.
-```
-
-| Field | Meaning |
-|---|---|
-| `id` | Stable identity inside the tree. Defaults to the file name without `.md`. Do not rename it after other nodes point at it. |
-| `parent` | The `id` of the parent node; empty (or `null`) marks a root. |
-| `order` | Sibling sort key, ascending. |
-| `title` | Card title. Falls back to the first heading, then the file name. |
-| `status` | `pending` · `active` · `done` · `blocked`. |
-| `updated` | ISO timestamp; the panel rewrites it on every save. |
-
-Files whose name starts with `_` are ignored by the panel, so `_index.md` is a fine place for human notes.
-
-## How it is built
+## Architecture
 
 | File | Role |
 |---|---|
-| `index.js` | Host half: registers the bundled skill provider and five JSON routes (`tree`, `save`, `create`, `status`, `delete`) on the Connection layer under `/api/thinking-tree`. Resolves the Session's workspace from its header. |
-| `client.js` | Browser half: registers the `thinking-tree` right-Sidebar tab type, its body, and the right-edge button in `shell.overlay`. Renders a Markdown subset, edits nodes, polls for changes. |
-| `assets/thinking-tree/SKILL.md` | The skill body the agent loads. |
-| `locale/*.json` | Plugin Manager title, description, detail page. |
-| `docs/DETAIL.md` | The detail page shown in Plugin Manager. |
+| `index.js` | Host half: registers three skill providers, the system-prompt mandates, the self-check loop and the `/api/thinking-tree` JSON routes (`tree`, `save`, `create`, `status`, `title`, `model`, `models`, `position`, `arrange`, `delete`, `selfcheck`, `sessions`, `diag`). |
+| `client.js` | Browser half: the right-sidebar tab, the mind-map layout and rendering, the drawer, the draggable pill, the self-check strip. |
+| `assets/*/SKILL.md` | Skill bodies. |
+| `test/*.mjs` | `node test/api.test.mjs` (20 checks over the write path) and `node test/layout.test.mjs` (10 checks over the geometry). |
 
-Nothing is cached on the Host: each request re-reads the folder, so the files really are the single source of truth.
+```bash
+node test/api.test.mjs      # 20/20
+node test/layout.test.mjs   # 10/10
+```
 
-## Limitations
+The layout test loads the geometry code straight out of `client.js`, so it asserts the shipped algorithm rather than a copy.
 
-- Bound to the Session's workspace directory; a Session without a resolvable workspace shows an empty panel.
-- The Markdown renderer covers headings, lists, code spans and fences, blockquotes, emphasis, and links — not tables, images, or raw HTML.
-- The tree is not part of the Session log. Each conversation keeps its own folder (`thinking-tree/s-xxxx/`), so two conversations never see each other's nodes.
-- One goal node is expected; additional roots are rendered as extra top-level cards.
+## Known limits
+
+- The panel needs the right sidebar plugin; without it the tab cannot dock.
+- The self-check loop stops after 40 rounds and leaves `selfcheck: stopped` on the goal.
+- Block text is clipped to 16 lines when expanded; the full text lives in the file.
 
 ## License
 
-GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+GNU General Public License v3.0 or later — see [LICENSE](LICENSE).
