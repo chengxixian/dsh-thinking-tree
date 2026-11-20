@@ -281,6 +281,33 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The whole body as readable text, for the expanded view.
+     * @param body - Markdown body.
+     * @returns one string with headings flattened and bullets marked.
+     */
+    function detailOf(body) {
+      const lines = []
+      for (const raw of String(body || '').split('\n')) {
+        const line = raw.trimEnd()
+        const trimmed = line.trim()
+        if (trimmed === '') continue
+        if (trimmed.startsWith('```')) continue
+        if (trimmed.startsWith('|')) continue
+        if (trimmed.startsWith('---')) continue
+        if (/^#{1,6}\s/.test(trimmed)) {
+          lines.push(trimmed.replace(/^#{1,6}\s+/, ''))
+          continue
+        }
+        if (/^[-*+]\s+/.test(trimmed)) {
+          lines.push(`· ${trimmed.replace(/^[-*+]\s+/, '').replace(/[*`]/g, '')}`)
+          continue
+        }
+        lines.push(trimmed.replace(/[*`]/g, ''))
+      }
+      return lines.join('\n')
+    }
+
+    /**
      * Lay a tree out as a left-to-right mind map.
      * @param {Array} roots - nodes with `childNodes`.
      * @param {Set} expanded - node names whose text is shown in full.
@@ -297,11 +324,13 @@ window.__ModuleLoader__.load({
         const isOpen = open.has(node.name)
         const budget = GEO.maxW - GEO.padX * 2
         const titleBudget = depth === 0 ? budget - 8 : budget
-        const title = wrapText(node.title || node.name, size, titleBudget, isOpen ? 8 : 2)
-        const rawSubtitle = depth <= 1 ? subtitleOf(node.body) : ''
+        const title = wrapText(node.title || node.name, size, titleBudget, isOpen ? 6 : 2)
+        // Every node carries its detail, collapsed to a single line until opened:
+        // one-line nodes say nothing useful once the work starts.
+        const rawSubtitle = isOpen ? detailOf(node.body) : subtitleOf(node.body)
         const sub = rawSubtitle === ''
           ? { lines: [], truncated: false }
-          : wrapText(rawSubtitle, 10.5, budget, isOpen ? 4 : 1)
+          : wrapText(rawSubtitle, 10.5, budget, isOpen ? 16 : 1)
         const titleWidth = Math.max(...title.lines.map(line => measure(line, size)))
         const subWidth = sub.lines.length === 0 ? 0 : Math.max(...sub.lines.map(line => measure(line, 10.5)))
         const width = Math.min(GEO.maxW, Math.max(GEO.minW, Math.max(titleWidth, subWidth) + GEO.padX * 2))
@@ -1018,6 +1047,17 @@ window.__ModuleLoader__.load({
             fontWeight: isGoal ? 700 : isRequirement ? 600 : 500,
             style: { userSelect: 'none' },
           }, line)),
+          box.open && box.subLines.length > 0
+            ? h('line', {
+              key: 'sep',
+              x1: GEO.padX - 3,
+              y1: titleY + (box.lines.length - 1) * GEO.line + 5,
+              x2: box.width - GEO.padX,
+              y2: titleY + (box.lines.length - 1) * GEO.line + 5,
+              stroke: 'var(--dsw-alias-border-l1)',
+              strokeWidth: 0.7,
+            })
+            : null,
           ...box.subLines.map((line, index) => h('text', {
             key: `s${index}`,
             x: GEO.padX,
