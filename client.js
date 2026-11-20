@@ -73,6 +73,16 @@ window.__ModuleLoader__.load({
       nodeModel: 'Model',
       inherit: 'Inherit the session model',
       modelEmpty: 'No model configured',
+      crashTitle: 'The panel failed to render; send the text below to the author',
+      selfcheckOff: 'Self-check',
+      selfcheckOn: 'Checking',
+      selfcheckPassed: 'Passed',
+      selfcheckStopped: 'Stopped',
+      selfcheckHint: 'Once on, every finished turn re-checks the chain and keeps working until the goal passes',
+      selfcheckNoWake: 'Self-check is on, but the agent could not be woken automatically; say "self-check" once',
+      newNode: 'New node',
+      addHint: 'Add a child block',
+      deleteHint: 'Delete this block and its subtree',
       expandText: 'Show the whole text',
       collapseText: 'Collapse',
       arrange: 'Auto layout',
@@ -117,6 +127,16 @@ window.__ModuleLoader__.load({
       nodeModel: '模型',
       inherit: '跟随会话模型',
       modelEmpty: '未配置模型',
+      crashTitle: '面板渲染出错，把下面这段发给作者',
+      selfcheckOff: '自检',
+      selfcheckOn: '自检中',
+      selfcheckPassed: '已通过',
+      selfcheckStopped: '自检已停',
+      selfcheckHint: '开启后每轮结束都按思考链自检，未达成目标就继续做，直到通过',
+      selfcheckNoWake: '自检已开启，但没能自动唤醒模型，发一句“自检”即可',
+      newNode: '新节点',
+      addHint: '加子节点',
+      deleteHint: '删除这个块及其子树',
       expandText: '展开全文',
       collapseText: '收起',
       arrange: '自动排列',
@@ -386,7 +406,7 @@ window.__ModuleLoader__.load({
      * ---------------------------------------------------------------- */
 
     const CSS = `
-.dsh-tt-root{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55}
+.dsh-tt-root{position:relative;display:flex;flex-direction:column;height:100%;min-height:0;flex:1 1 auto;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55}
 .dsh-tt-head{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
 .dsh-tt-head-title{font-weight:600;font-size:12px;letter-spacing:.02em;white-space:nowrap}
 .dsh-tt-head-path{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
@@ -401,6 +421,8 @@ window.__ModuleLoader__.load({
 .dsh-tt-canvas svg{display:block;user-select:none}
 .dsh-tt-node{cursor:pointer}
 .dsh-tt-node:hover .dsh-tt-node-bg{filter:brightness(1.12)}
+.dsh-tt-acts{opacity:0;transition:opacity .12s}
+.dsh-tt-node:hover .dsh-tt-acts,.dsh-tt-node:focus-within .dsh-tt-acts{opacity:1}
 .dsh-tt-empty{display:flex;flex-direction:column;gap:8px;padding:16px 14px;color:var(--dsw-alias-label-secondary);align-items:flex-start}
 .dsh-tt-empty strong{color:var(--dsw-alias-label-primary);font-size:13px}
 .dsh-tt-error{color:var(--dsw-alias-state-error-primary);font-size:11.5px;padding:4px 12px}
@@ -414,11 +436,43 @@ window.__ModuleLoader__.load({
 .dsh-tt-input{flex:1;min-width:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:5px 8px;font-size:12px;font-family:inherit}
 .dsh-tt-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
 .dsh-tt-meta{font-size:10.5px;color:var(--dsw-alias-label-secondary)}
+.dsh-tt-crash{display:flex;flex-direction:column;gap:8px;padding:14px;color:var(--dsw-alias-label-primary);font-size:12px;height:100%;overflow:auto}
+.dsh-tt-crash strong{color:var(--dsw-alias-state-error-primary)}
+.dsh-tt-crash pre{white-space:pre-wrap;word-break:break-word;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:6px;padding:8px;font-size:11px;line-height:1.45;margin:0}
 `
 
     /* ---------------------------------------------------------------- *
      * Small components
      * ---------------------------------------------------------------- */
+
+    /**
+     * Catch a render failure and print it inside the panel.
+     *
+     * A throwing slot entry is silently blanked by the shell, which reads as a
+     * black column with no way to explain itself. Reporting the failure in the
+     * panel keeps the reason visible to whoever is looking at it.
+     */
+    class PanelBoundary extends React.Component {
+      constructor(props) {
+        super(props)
+        this.state = { failure: null }
+      }
+
+      static getDerivedStateFromError(error) {
+        return { failure: error }
+      }
+
+      render() {
+        if (this.state.failure === null) return this.props.children
+        const failure = this.state.failure
+        return h(
+          'div',
+          { className: 'dsh-tt-crash' },
+          h('strong', null, this.props.title),
+          h('pre', null, String(failure?.stack ?? failure?.message ?? failure)),
+        )
+      }
+    }
 
     /**
      * The component-local stylesheet.
@@ -624,7 +678,7 @@ window.__ModuleLoader__.load({
      * @returns {object} React element.
      */
     function MindMap(props) {
-      const { boxes, links, width, height, zoom, selected, onSelect, onStatus, onToggleExpand, onNodeDragStart } = props
+      const { boxes, links, width, height, zoom, selected, onSelect, onStatus, onToggleExpand, onNodeDragStart, onAddChild, onDelete, deleteArmed, t } = props
       const nodes = []
       for (const box of boxes) {
         const isGoal = box.depth === 0
@@ -741,6 +795,57 @@ window.__ModuleLoader__.load({
               }, box.open ? '▴' : '▾'),
             )
             : null,
+          // Add and delete live on the block itself, beside it in the gap.
+          h(
+            'g',
+            { key: 'acts', className: 'dsh-tt-acts', transform: `translate(${box.width + 12} 0)` },
+            h(
+              'g',
+              {
+                style: { cursor: 'pointer' },
+                onMouseDown: event => event.stopPropagation(),
+                onClick: (event) => {
+                  event.stopPropagation()
+                  onAddChild(box.node)
+                },
+              },
+              h('title', null, t('addHint')),
+              h('circle', { cy: box.height / 2 - 10, r: 8.5, fill: 'var(--dsw-alias-bg-layer-2)', stroke: 'var(--dsw-alias-border-l2)', strokeWidth: 1 }),
+              h('text', {
+                y: box.height / 2 - 10 + 3.6,
+                textAnchor: 'middle',
+                fontSize: 11,
+                fill: 'var(--dsw-alias-label-primary)',
+                style: { userSelect: 'none' },
+              }, '＋'),
+            ),
+            h(
+              'g',
+              {
+                style: { cursor: 'pointer' },
+                onMouseDown: event => event.stopPropagation(),
+                onClick: (event) => {
+                  event.stopPropagation()
+                  onDelete(box.node)
+                },
+              },
+              h('title', null, deleteArmed === box.node.name ? t('confirmRemove') : t('deleteHint')),
+              h('circle', {
+                cy: box.height / 2 + 10,
+                r: 8.5,
+                fill: deleteArmed === box.node.name ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-bg-layer-2)',
+                stroke: deleteArmed === box.node.name ? 'none' : 'var(--dsw-alias-border-l2)',
+                strokeWidth: 1,
+              }),
+              h('text', {
+                y: box.height / 2 + 10 + 3.6,
+                textAnchor: 'middle',
+                fontSize: 11,
+                fill: deleteArmed === box.node.name ? '#ffffff' : 'var(--dsw-alias-label-primary)',
+                style: { userSelect: 'none' },
+              }, deleteArmed === box.node.name ? '!' : '×'),
+            ),
+          ),
         ))
       }
 
@@ -785,6 +890,33 @@ window.__ModuleLoader__.load({
       const [moved, setMoved] = React.useState({})
       const [expanded, setExpanded] = React.useState(() => new Set())
       const [catalog, setCatalog] = React.useState({ models: [] })
+      const [deleteArmed, setDeleteArmed] = React.useState(null)
+      const [notice, setNotice] = React.useState('')
+
+      const armDelete = (node) => {
+        if (deleteArmed !== node.name) {
+          setDeleteArmed(node.name)
+          setTimeout(() => setDeleteArmed(current => (current === node.name ? null : current)), 4000)
+          return
+        }
+        setDeleteArmed(null)
+        if (selected === node.name) setSelected(null)
+        void mutate('delete', { name: node.name, cascade: true })
+      }
+
+      const addChild = async (node) => {
+        setBusy(true)
+        try {
+          const created = await call('create', { method: 'POST', body: { sessionId, parent: node.id, title: t('newNode') } })
+          await load(true)
+          if (created !== undefined && typeof created.name === 'string') setSelected(created.name)
+          setState(previous => ({ ...previous, error: null }))
+        } catch (error) {
+          setState(previous => ({ ...previous, error: String(error?.message ?? error) }))
+        } finally {
+          setBusy(false)
+        }
+      }
 
       // The model catalog is the Host's real dispatch table, fetched once per mount.
       React.useEffect(() => {
@@ -976,6 +1108,32 @@ window.__ModuleLoader__.load({
 
       const total = data === null ? 0 : data.nodes.length
       const showEmpty = sessionId !== '' && data !== null && tree.length === 0
+      const selfcheck = data === null ? '' : (data.selfcheck || '')
+      const selfcheckRound = data === null ? 0 : (data.selfcheckRound || 0)
+      const selfcheckLabel = selfcheck === 'on'
+        ? `${t('selfcheckOn')} ${selfcheckRound}`
+        : selfcheck === 'passed'
+          ? t('selfcheckPassed')
+          : selfcheck === 'stopped'
+            ? t('selfcheckStopped')
+            : t('selfcheckOff')
+      const toggleSelfCheck = async () => {
+        if (sessionId === '') return
+        setBusy(true)
+        setNotice('')
+        try {
+          const result = await call('selfcheck', {
+            method: 'POST',
+            body: { sessionId, mode: selfcheck === 'on' ? 'off' : 'on' },
+          })
+          await load(true)
+          if (result.selfcheck === 'on' && result.poked !== true) setNotice(t('selfcheckNoWake'))
+        } catch (error) {
+          setState(previous => ({ ...previous, error: String(error?.message ?? error) }))
+        } finally {
+          setBusy(false)
+        }
+      }
 
       // The wheel zooms the map instead of scrolling it, anchored on the pointer
       // so the node under the cursor stays under the cursor.
@@ -1016,6 +1174,13 @@ window.__ModuleLoader__.load({
           { className: 'dsh-tt-head' },
           h('span', { className: 'dsh-tt-head-title' }, t('tabTitle')),
           h('span', { className: 'dsh-tt-head-path', title: data?.absolute || '' }, data === null ? '' : `${data.folder}/ · ${total}`),
+          h(Button, {
+            label: selfcheckLabel,
+            title: t('selfcheckHint'),
+            primary: selfcheck === 'on',
+            disabled: busy || sessionId === '',
+            onClick: () => void toggleSelfCheck(),
+          }),
           h(Button, { label: '−', title: t('zoomOut'), onClick: () => setZoom(value => Math.max(0.45, Number((value - 0.15).toFixed(2)))) }),
           h(Button, { label: '＋', title: t('zoomIn'), onClick: () => setZoom(value => Math.min(1.9, Number((value + 0.15).toFixed(2)))) }),
           h(Button, { label: '⤢', title: t('fit'), onClick: () => setZoom(1) }),
@@ -1030,6 +1195,7 @@ window.__ModuleLoader__.load({
           h(Button, { label: '⟳', title: t('refresh'), onClick: () => void load(true) }),
         ),
         state.error !== null ? h('div', { className: 'dsh-tt-error' }, `${t('fail')}: ${state.error}`) : null,
+        notice !== '' ? h('div', { className: 'dsh-tt-meta', style: { padding: '4px 12px' } }, notice) : null,
         sessionId === ''
           ? h('div', { className: 'dsh-tt-empty' }, h('strong', null, t('noSession')))
           : showEmpty
@@ -1096,6 +1262,10 @@ window.__ModuleLoader__.load({
                   onStatus: cycleStatus,
                   onToggleExpand: toggleExpanded,
                   onNodeDragStart: beginNodeDrag,
+                  onAddChild: addChild,
+                  onDelete: armDelete,
+                  deleteArmed,
+                  t,
                 }),
             ),
         selectedNode === undefined
@@ -1264,7 +1434,7 @@ window.__ModuleLoader__.load({
 
         ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register(
           { name: 'sidebar.right.pane.tab', key: TAB_ID },
-          props => h(TreePanel, { ...props, t }),
+          props => h(PanelBoundary, { title: t('crashTitle') }, h(TreePanel, { ...props, t })),
         )), 'thinking-tree: panel body')
 
         ctx.effect(() => mountEdgeButton(ctx, t), 'thinking-tree: edge button')

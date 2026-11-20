@@ -84,6 +84,13 @@ export const name = 'thinking-tree'
 export function apply(ctx) {
   ctx.effect(() => ctx.skills.registerProvider(() => skillProvider), 'thinking-tree: skill provider')
 
+  // The self-check loop: while the goal node says `selfcheck: on`, every turn
+  // that ends starts the next verification round.
+  ctx.effect(
+    () => ctx.on('turn/end', (payload) => { void selfCheckAfterTurn(ctx, payload) }),
+    'thinking-tree: self-check loop',
+  )
+
   const routes = [
     { path: `${ROUTE_PREFIX}/tree`, methods: ['GET'], fetch: (request) => serveTree(ctx, request) },
     { path: `${ROUTE_PREFIX}/save`, methods: ['POST'], fetch: (request) => serveSave(ctx, request) },
@@ -92,6 +99,7 @@ export function apply(ctx) {
     { path: `${ROUTE_PREFIX}/title`, methods: ['POST'], fetch: (request) => serveTitle(ctx, request) },
     { path: `${ROUTE_PREFIX}/model`, methods: ['POST'], fetch: (request) => serveModel(ctx, request) },
     { path: `${ROUTE_PREFIX}/models`, methods: ['GET'], fetch: () => serveModels(ctx) },
+    { path: `${ROUTE_PREFIX}/selfcheck`, methods: ['POST'], fetch: (request) => serveSelfCheck(ctx, request) },
     { path: `${ROUTE_PREFIX}/position`, methods: ['POST'], fetch: (request) => servePosition(ctx, request) },
     { path: `${ROUTE_PREFIX}/arrange`, methods: ['POST'], fetch: (request) => serveArrange(ctx, request) },
     { path: `${ROUTE_PREFIX}/diag`, methods: ['POST'], fetch: (request) => serveDiag(request) },
@@ -203,6 +211,133 @@ async function serveModels(ctx) {
   modelCache.at = now
   modelCache.value = value
   return json({ ok: true, ...value })
+}
+
+/** Rounds the self-check loop may run before it gives up and asks for a human. */
+const MAX_SELF_CHECK_ROUNDS = 40
+
+/**
+ * The instruction a self-check round hands back to the agent.
+ * @param {string} goalTitle - the goal node's title.
+ * @param {number} round - this round's number.
+ * @returns the prompt text.
+ */
+function selfCheckPrompt(goalTitle, round) {
+  return [
+    `【思考链自检 第 ${round} 轮】目标：${goalTitle}`,
+    '',
+    '按 thinking-tree 技能执行一次自检，不要只回话，要动手核对：',
+    '1. 读 thinking-tree/ 下全部节点，重点是第二层的每一条“要求”。',
+    '2. 逐条核对要求是否真的达成，必须有证据：文件存在且内容对、命令跑通、页面/接口的实际行为。没有证据就算未完成。',
+    '3. 未完成的：把该节点 status 置 blocked，正文写清缺什么，然后立刻继续做。',
+    '4. 全部达成且有证据：把 00-goal.md 的 selfcheck 改成 passed、status 改成 done，并在正文补“结果：…”。',
+    '5. 没达成之前不要改 selfcheck，也不要宣布完成。',
+  ].join('\n')
+}
+
+/**
+ * Wake one Session's agent with a self-check round.
+ * @param ctx - Host context.
+ * @param sessionId - the Session to wake.
+ * @param goalTitle - goal node title.
+ * @param round - round number for the prompt.
+ * @returns whether a wake-up was accepted.
+ */
+function pokeSelfCheck(ctx, sessionId, goalTitle, round) {
+  const text = selfCheckPrompt(goalTitle, round)
+  const controller = ctx.get('sessionController')
+  if (controller !== undefined && controller !== null && typeof controller.prompt === 'function') {
+    const payloads = [
+      { sessionId, text },
+      { sessionId, content: [{ type: 'text', text }] },
+      { sessionId, message: text },
+    ]
+    for (const payload of payloads) {
+      try {
+        const result = controller.prompt(payload)
+        if (result !== undefined && typeof result.then === 'function') result.catch(() => undefined)
+        return true
+      } catch {
+        // Try the next accepted shape.
+      }
+    }
+  }
+  const agents = ctx.get('agents')
+  const agent = agents === undefined || agents === null ? undefined : agents.get?.(sessionId)
+  if (agent !== undefined && agent !== null && typeof agent.followup === 'function') {
+    try {
+      agent.followup({ role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } })
+      return true
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
+/**
+ * Switch the self-check loop on or off for one Session.
+ * @param ctx - Host context.
+ * @param request - `POST` `{ sessionId, mode? }`; `mode` is `on`, `off`, or `toggle`.
+ * @returns the resulting state and whether the agent was woken.
+ */
+async function serveSelfCheck(ctx, request) {
+  const input = await readJson(request)
+  if (input === undefined) return json({ ok: false, error: 'bad-body' }, 400)
+  const folder = folderOf(ctx, input.sessionId)
+  if (folder.error !== undefined) return json({ ok: false, ...folder }, 400)
+  try {
+    const tree = await readTree(folder.dir)
+    const shaped = shapeTree(tree.nodes)
+    const goal = shaped.roots[0]
+    if (goal === undefined) return json({ ok: false, error: 'no-goal', message: 'create the goal node first' }, 400)
+    const wanted = input.mode === 'on' ? 'on' : input.mode === 'off' ? 'passed' : (goal.selfcheck === 'on' ? 'passed' : 'on')
+    const path = join(folder.dir, goal.name)
+    let text = await readFile(path, 'utf8')
+    text = writeField(text, 'selfcheck', wanted)
+    if (wanted === 'on') text = writeField(text, 'selfcheck-round', 1)
+    text = writeField(text, 'updated', new Date().toISOString())
+    await writeFile(path, text, 'utf8')
+    const poked = wanted === 'on' ? pokeSelfCheck(ctx, input.sessionId, goal.title, 1) : false
+    return json({ ok: true, selfcheck: wanted, poked })
+  } catch (error) {
+    return json({ ok: false, error: 'selfcheck-failed', message: String(error?.message ?? error) }, 500)
+  }
+}
+
+/**
+ * Continue the self-check loop after a turn ends, while the goal still asks for it.
+ * @param ctx - Host context.
+ * @param payload - the `turn/end` payload.
+ */
+async function selfCheckAfterTurn(ctx, payload) {
+  try {
+    const session = payload?.session ?? payload?.agent?.session ?? (payload?.header !== undefined ? payload : undefined)
+    const root = session?.header?.cwd
+    const sessionId = session?.id
+    if (typeof root !== 'string' || typeof sessionId !== 'string') return
+    const tree = await readTree(join(root, FOLDER))
+    if (!tree.exists) return
+    const shaped = shapeTree(tree.nodes)
+    const goal = shaped.roots[0]
+    if (goal === undefined || goal.selfcheck !== 'on') return
+    const round = Number(goal.selfcheckRound ?? 0) + 1
+    const path = join(root, FOLDER, goal.name)
+    let text = await readFile(path, 'utf8')
+    if (round > MAX_SELF_CHECK_ROUNDS) {
+      // Stop looping and hand the decision back with the reason on the node.
+      text = writeField(text, 'selfcheck', 'stopped')
+      text = writeField(text, 'updated', new Date().toISOString())
+      await writeFile(path, text, 'utf8')
+      return
+    }
+    text = writeField(text, 'selfcheck-round', round)
+    text = writeField(text, 'updated', new Date().toISOString())
+    await writeFile(path, text, 'utf8')
+    setTimeout(() => { pokeSelfCheck(ctx, sessionId, goal.title, round) }, 600)
+  } catch {
+    // The loop must never break a turn.
+  }
 }
 
 /**
@@ -358,6 +493,8 @@ async function readTree(dir) {
       status: STATUSES.includes(data.status) ? data.status : 'pending',
       body: body.trimStart(),
       model: typeof data.model === 'string' ? data.model : '',
+      selfcheck: typeof data.selfcheck === 'string' ? data.selfcheck : '',
+      selfcheckRound: Number.isFinite(Number(data['selfcheck-round'])) ? Number(data['selfcheck-round']) : 0,
       x: pinnedX,
       y: pinnedY,
       mtime: info.mtimeMs,
@@ -470,6 +607,8 @@ async function serveTree(ctx, request) {
       absolute: folder.dir,
       exists: tree.exists,
       signature: tree.signature,
+      selfcheck: shaped.roots[0]?.selfcheck ?? '',
+      selfcheckRound: shaped.roots[0]?.selfcheckRound ?? 0,
       nodes: shaped.nodes.map(node => ({
         name: node.name,
         id: node.id,
@@ -479,6 +618,8 @@ async function serveTree(ctx, request) {
         status: node.status,
         body: node.body,
         model: node.model,
+        selfcheck: node.selfcheck,
+        selfcheckRound: node.selfcheckRound,
         depth: node.depth,
         children: node.children.map(child => child.id),
         mtime: node.mtime,
@@ -491,7 +632,27 @@ async function serveTree(ctx, request) {
 }
 
 /**
- * Write one node file exactly as given.
+ * Replace a node's body while keeping its front matter byte for byte.
+ *
+ * The panel sends only the Markdown body, so writing it as the whole file would
+ * drop `id`, `parent`, `order`, the pinned `x`/`y`, the `model` route, and the
+ * self-check flag — which silently detaches the node and loses its position.
+ * @param existing - the current file contents, or an empty string.
+ * @param body - the new Markdown body.
+ * @returns the merged file contents.
+ */
+export function mergeBody(existing, body) {
+  const text = String(existing ?? '')
+  const content = String(body ?? '').replace(/^\uFEFF/, '')
+  if (!text.startsWith('---')) return content
+  const end = text.indexOf('\n---', 3)
+  if (end < 0) return content
+  const head = text.slice(0, end + 4)
+  return `${head}\n${content}`
+}
+
+/**
+ * Write one node file, keeping the front matter the panel did not send.
  * @param ctx - Host context.
  * @param request - `POST` `{ sessionId, name, content }`.
  * @returns the write receipt.
@@ -502,14 +663,24 @@ async function serveSave(ctx, request) {
   const name = safeName(input.name)
   if (name === undefined) return json({ ok: false, error: 'bad-name', message: 'not a node file name' }, 400)
   if (typeof input.content !== 'string') return json({ ok: false, error: 'bad-content' }, 400)
-  if (input.content.length * 4 > MAX_FILE_BYTES * 4) return json({ ok: false, error: 'too-large' }, 413)
+  if (input.content.length > MAX_FILE_BYTES) return json({ ok: false, error: 'too-large' }, 413)
   const folder = folderOf(ctx, input.sessionId)
   if (folder.error !== undefined) return json({ ok: false, ...folder }, 400)
   try {
     await mkdir(folder.dir, { recursive: true })
     const path = join(folder.dir, name)
     if (relative(folder.dir, path).startsWith('..')) return json({ ok: false, error: 'bad-name' }, 400)
-    await writeFile(path, writeField(input.content, 'updated', new Date().toISOString()), 'utf8')
+    // The body arrives without its front matter, so the existing block is kept
+    // byte for byte: replacing the whole file would drop id, parent, order, the
+    // pinned position, and the model route.
+    let existing = ''
+    try {
+      existing = await readFile(path, 'utf8')
+    } catch {
+      // A new file simply starts with the body.
+    }
+    const merged = mergeBody(existing, input.content)
+    await writeFile(path, writeField(merged, 'updated', new Date().toISOString()), 'utf8')
     return json({ ok: true, name })
   } catch (error) {
     return json({ ok: false, error: 'write-failed', message: String(error?.message ?? error) }, 500)
