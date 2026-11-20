@@ -6,6 +6,8 @@ English | [中文](README.zh.md)
 
 ![icon](icon.svg)
 
+![A five-tier thinking tree: goal, requirements, plans, routes and steps, joined by curved links](docs/preview.png)
+
 ## What it looks like
 
 ```
@@ -110,4 +112,4 @@ Nothing is cached on the Host: each request re-reads the folder, so the files re
 
 ## License
 
-MIT
+GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
