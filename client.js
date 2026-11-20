@@ -429,8 +429,8 @@ window.__ModuleLoader__.load({
      * ---------------------------------------------------------------- */
 
     const CSS = `
-.dsh-tt-root{position:relative;display:flex;flex-direction:column;height:100%;min-height:0;flex:1 1 auto;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55}
-.dsh-tt-head{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
+.dsh-tt-root{position:relative;display:flex;flex-direction:column;height:100%;min-height:0;min-width:0;flex:1 1 auto;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55}
+.dsh-tt-head{display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;min-width:0;overflow:hidden}
 .dsh-tt-head-title{font-weight:600;font-size:12px;letter-spacing:.02em;white-space:nowrap}
 .dsh-tt-head-path{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 .dsh-tt-btn{border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:6px;cursor:pointer;font-size:11px;padding:3px 7px;font-family:inherit;transition:background .12s,color .12s}
@@ -561,11 +561,15 @@ window.__ModuleLoader__.load({
         if (typeof document === 'undefined') return
         const root = document.querySelector('[data-dsh-thinking-tree="panel"]')
         if (root === null) return
-        const width = root.getBoundingClientRect().width
-        if (width >= 320) return
+        // Measure the pane the panel sits in, not the panel's own content: a
+        // narrow docked column clips a wide panel, and the panel still reports
+        // its content width.
+        const pane = root.parentElement
+        const visible = pane === null ? root.getBoundingClientRect().width : pane.getBoundingClientRect().width
+        if (visible >= 320) return
         try {
           ctx.layout.openRightbar(true, true)
-          postDiag({ stage: 'escalated', measured: Math.round(width) })
+          postDiag({ stage: 'escalated', paneWidth: Math.round(visible) })
         } catch {
           /* keep the docked presentation */
         }
@@ -1218,6 +1222,35 @@ window.__ModuleLoader__.load({
 
       const total = data === null ? 0 : data.nodes.length
       const showEmpty = sessionId !== '' && data !== null && tree.length === 0
+
+      // Report what the panel actually rendered, once per tree revision. This is
+      // how a rendering problem is observed from outside the browser: the numbers
+      // land in a file instead of being guessed from a screenshot.
+      const reported = React.useRef('')
+      React.useEffect(() => {
+        if (data === null) return
+        if (data.signature === reported.current) return
+        reported.current = data.signature
+        const root = typeof document === 'undefined' ? null : document.querySelector('[data-dsh-thinking-tree="panel"]')
+        const tiers = {}
+        for (const box of map.boxes) tiers[box.depth] = (tiers[box.depth] || 0) + 1
+        postDiag({
+          stage: 'panel',
+          nodes: data.nodes.length,
+          boxes: map.boxes.length,
+          links: map.links.length,
+          canvas: { w: Math.round(map.width), h: Math.round(map.height) },
+          rootWidth: root === null ? null : Math.round(root.getBoundingClientRect().width),
+          paneWidth: root === null || root.parentElement === null ? null : Math.round(root.parentElement.getBoundingClientRect().width),
+          rootHeight: root === null ? null : Math.round(root.getBoundingClientRect().height),
+          svgRects: root === null ? null : root.querySelectorAll('svg rect').length,
+          svgPaths: root === null ? null : root.querySelectorAll('svg path').length,
+          svgTexts: root === null ? null : root.querySelectorAll('svg text').length,
+          tiers,
+          selfcheck: data.selfcheck || '',
+          firstTitles: map.boxes.slice(0, 3).map(box => box.node.title),
+        })
+      }, [data === null ? '' : data.signature])
       const selfcheck = data === null ? '' : (data.selfcheck || '')
       const selfcheckRound = data === null ? 0 : (data.selfcheckRound || 0)
       const selfcheckLabel = selfcheck === 'on'
