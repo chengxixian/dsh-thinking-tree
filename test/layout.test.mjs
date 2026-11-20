@@ -91,6 +91,27 @@ check('text wraps to the budget', wrapped.lines.length <= 2 && wrapped.lines.eve
   lines: wrapped.lines.length,
 })
 
+// A collapsed card shows one line of detail; opening it shows the whole body.
+{
+  const detailed = [node('00-goal.md', '目标', Array.from({ length: 12 }, (_, i) => `第 ${i + 1} 步：用 node 把 out/items.json 写出来，字段保留 id/name/price。`).join('\n'), 'active', [])]
+  const closed = api.layoutMindMap(detailed, new Set(), {}).boxes[0]
+  const opened = api.layoutMindMap(detailed, new Set(['00-goal.md']), {}).boxes[0]
+  check('a collapsed card keeps one detail line', closed.subLines.length === 1 && closed.toggle === true, {
+    lines: closed.subLines.length,
+    toggle: closed.toggle,
+  })
+  check('opening a card reveals the whole body', opened.subLines.length > 6 && opened.height > closed.height, {
+    collapsedLines: closed.subLines.length,
+    openLines: opened.subLines.length,
+    collapsedHeight: Math.round(closed.height),
+    openHeight: Math.round(opened.height),
+  })
+  check('the opened body starts at the first line and is capped', opened.subLines.length === 16 && opened.subLines[0].startsWith('第 1 步'), {
+    lines: opened.subLines.length,
+    first: opened.subLines[0],
+  })
+}
+
 const failed = results.filter(result => !result.pass)
 console.log(JSON.stringify({ total: results.length, passed: results.length - failed.length, failed: failed.length, results }, null, 1))
 process.exitCode = failed.length === 0 ? 0 : 1
