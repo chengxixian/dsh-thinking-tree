@@ -136,6 +136,7 @@ const REMINDER_TEXT = [
   '',
   '**动手前先问自己一句：这一轮用户提了什么新要求？树里有对应节点吗？没有就先加节点再动手。**',
   '漏加节点＝这一轮的要求会消失，后面没人记得。加节点只要几秒，别省。',
+  '如果 `00-goal.md` 还叫「本对话的思考链」（宿主自动建的占位），第一轮就把它改成真实目标，并挂出第二层要求。',
   '',
   '每轮开始：读 `00-goal.md` 和第二层每一条要求，再看当前唯一 `active` 的那条链——不要凭记忆接着做。',
   '每轮结束：检查并更新节点。做过的节点改 `status`，正文补一行结果 + 证据（文件路径、命令输出、接口返回）；没做的保持原状，不要标 done。',
@@ -913,11 +914,64 @@ async function serveSessions(ctx) {
  * @param request - `GET` with `sessionId`.
  * @returns the tree payload.
  */
+/**
+ * Give a brand-new conversation a goal node, once.
+ *
+ * The title is a placeholder on purpose: only the agent knows what the
+ * conversation is about, and the prompt tells it to rewrite the title on its
+ * first turn. `_seeded` records that this happened, so a user who deletes the
+ * whole tree does not get it recreated on the next poll.
+ * @param folder - resolved folder with `dir` and `key`.
+ * @returns whether a goal was written.
+ */
+async function seedEmptyTree(folder) {
+  if (folder.dir === undefined) return false
+  try {
+    await mkdir(folder.dir, { recursive: true })
+    const existing = (await readdir(folder.dir)).filter(name => name.endsWith('.md'))
+    if (existing.length > 0) return false
+    const marker = join(folder.dir, '_seeded')
+    if (await readFile(marker, 'utf8').then(() => true).catch(() => false)) return false
+    const id = '00-goal'
+    const title = '本对话的思考链'
+    const content = [
+      '---',
+      `id: ${quote(id)}`,
+      `parent: ${quote('')}`,
+      'order: 0',
+      `title: ${quote(title)}`,
+      'status: pending',
+      `session: ${quote(folder.key)}`,
+      `updated: ${new Date().toISOString()}`,
+      '---',
+      '',
+      `# ${title}`,
+      '',
+      '这是自动建出来的占位目标。',
+      '',
+      '## 做成什么样',
+      '待补：把标题改成这个对话真正的目标，并在下面挂出第二层要求。',
+      '',
+      '## 怎么验证',
+      '待补。',
+      '',
+    ].join('\n')
+    await writeFile(join(folder.dir, `${id}.md`), content, 'utf8')
+    await writeFile(marker, new Date().toISOString(), 'utf8')
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function serveTree(ctx, request) {
   const sessionId = new URL(request.url).searchParams.get('sessionId') ?? ''
   const folder = folderOf(ctx, sessionId)
   if (folder.error !== undefined) return json({ ok: false, ...folder }, 400)
   try {
+    // A fresh conversation should already have a chain the first time the panel
+    // opens it; waiting for the model to remember means it sometimes never does.
+    await seedEmptyTree(folder)
     const { tree, shaped } = await readScopedTree(folder, sessionId)
     return json({
       ok: true,

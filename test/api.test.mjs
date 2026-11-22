@@ -43,11 +43,17 @@ const once = async (handler, request) => {
 const results = []
 const check = (name, pass, detail) => results.push({ name, pass, detail })
 
+// A fresh conversation is seeded with a goal, and a user who clears it keeps it clear.
 {
   const res = await once(serveTree, new Request(`${base}/tree?sessionId=${sessionId}`))
-  check('empty folder answers an empty tree', res.status === 200 && res.body.ok && res.body.nodes.length === 0, {
+  const root = res.body.nodes.find(node => node.depth === 0)
+  check('a fresh conversation gets a seeded goal', res.status === 200 && res.body.nodes.length === 1 && root?.title === '本对话的思考链', {
     nodes: res.body.nodes?.length,
+    title: root?.title,
   })
+  await once(serveDelete, post('delete', { sessionId, name: root.name, cascade: true }))
+  const again = await once(serveTree, new Request(`${base}/tree?sessionId=${sessionId}`))
+  check('a cleared tree is not seeded again', again.body.nodes.length === 0, { nodes: again.body.nodes.length })
 }
 
 let goalName
@@ -76,20 +82,24 @@ let childName
   const other = 'session-other'
   const otherBefore = await once(serveTree, new Request(`${base}/tree?sessionId=${other}`))
   const mine = await once(serveTree, new Request(`${base}/tree?sessionId=${sessionId}`))
-  check('another conversation starts with its own empty chain', otherBefore.body.ok === true && otherBefore.body.nodes.length === 0 && otherBefore.body.folder !== mine.body.folder, {
-    nodes: otherBefore.body.nodes.length,
-    ownFolder: mine.body.folder,
-    otherFolder: otherBefore.body.folder,
-  })
+  check('another conversation gets its own seeded chain in its own folder',
+    otherBefore.body.ok === true && otherBefore.body.nodes.length === 1 &&
+      otherBefore.body.folder !== mine.body.folder, {
+      nodes: otherBefore.body.nodes.length,
+      ownFolder: mine.body.folder,
+      otherFolder: otherBefore.body.folder,
+    })
   check('the owning conversation still sees its chain', mine.body.nodes.length === 2, { nodes: mine.body.nodes.length })
   const created = await once(serveCreate, post('create', { sessionId: other, parent: '', title: '另一个对话的目标' }))
   const otherAfter = await once(serveTree, new Request(`${base}/tree?sessionId=${other}`))
   const mineAfter = await once(serveTree, new Request(`${base}/tree?sessionId=${sessionId}`))
   check('each conversation only sees its own nodes',
-    otherAfter.body.nodes.length === 1 && otherAfter.body.nodes[0].name === created.body.name &&
-      mineAfter.body.nodes.length === 2 && !mineAfter.body.nodes.some(node => node.name === created.body.name), {
-      other: otherAfter.body.nodes.length,
-      mine: mineAfter.body.nodes.length,
+    otherAfter.body.nodes.some(node => node.name === created.body.name) &&
+      !otherAfter.body.nodes.some(node => node.name === goalName) &&
+      mineAfter.body.nodes.some(node => node.name === goalName) &&
+      !mineAfter.body.nodes.some(node => node.name === created.body.name), {
+      other: otherAfter.body.nodes.map(node => node.name),
+      mine: mineAfter.body.nodes.map(node => node.name),
     })
 }
 
