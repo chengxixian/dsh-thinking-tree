@@ -15,13 +15,24 @@ const results = []
 const check = (name, pass, detail) => results.push({ name, pass, detail })
 
 const root = mkdtempSync(join(tmpdir(), 'thinking-tree-plugin-'))
+const memoryRoot = mkdtempSync(join(tmpdir(), 'thinking-tree-plugin-memory-'))
+process.env.DSH_AGENT_MEMORY = memoryRoot
 const sessionId = 'session-plugin-test'
 
 /** A Host-shaped fake: every service the bundle may look up. */
 function fakeHost() {
   const registered = { tools: [], routes: [], providers: [] }
   const listeners = new Map()
+  const handlers = new Map()
   const effects = []
+  const prunerCalls = []
+  const pruner = {
+    pruneSession: session => {
+      prunerCalls.push(session?.id)
+      return { pruned: [{ originalSeq: 1, replacementSeq: 2 }], charsRemoved: 900 }
+    },
+  }
+  const meter = { contextPressure: () => ({ pressureTokens: 900_000, contextWindow: 1_000_000 }) }
   // Injected services are context properties in Cordis; optional ones go through get().
   const skills = { registerProvider: factory => { registered.providers.push(factory({ signal: new AbortController().signal, invalidate: () => undefined })); return () => undefined } }
   const connection = { fetch: { register: route => { registered.routes.push(route); return () => undefined } } }
@@ -38,16 +49,29 @@ function fakeHost() {
       if (key === 'systemPrompt') return { context: () => () => undefined }
       if (key === 'llm') return { listProviders: () => [], listModels: async () => [] }
       if (key === 'mcpManager') return { register: () => () => undefined }
+      if (key === 'toolResultPruner') return pruner
+      if (key === 'tokenMeter') return meter
       return undefined
     },
-    on(event, handler) { listeners.set(event, handler); return () => listeners.delete(event) },
+    on(event, handler) {
+      const list = handlers.get(event) ?? []
+      list.push(handler)
+      handlers.set(event, list)
+      // Several bundles listen to one event in the real Host, so the fake keeps
+      // every handler and only exposes the first one through `listeners`.
+      if (!listeners.has(event)) listeners.set(event, handler)
+      return () => {
+        const index = list.indexOf(handler)
+        if (index >= 0) list.splice(index, 1)
+      }
+    },
     effect(fn) {
       const disposer = fn()
       effects.push(disposer)
       return typeof disposer === 'function' ? disposer : () => undefined
     },
   }
-  return { ctx, registered, listeners, effects }
+  return { ctx, registered, listeners, handlers, effects, prunerCalls }
 }
 
 let failure = ''
@@ -94,6 +118,21 @@ try {
   const memoryTool = host.registered.tools.find(definition => definition.name === 'memory')
   const recorded = await memoryTool.execute({ action: 'record', kind: 'decision', title: '插件自检写入', body: 'ok' }, { agent: { id: sessionId } })
   check('the memory tool writes into the conversation folder', recorded.ok === true, recorded)
+
+  // A turn that ends with `max-tokens` at 90% pressure auto-prunes the tool
+  // results, because compaction itself may be unable to run in that Session.
+  const onSessionEvent = host.listeners.get('session/event')
+  const fireSessionEvent = (session, event) => {
+    for (const handler of host.handlers.get('session/event') ?? [onSessionEvent]) handler(session, event)
+  }
+  fireSessionEvent({ id: 'session-exhausted', header: { cwd: root } }, { type: 'turn/end', data: { turn: 9, reason: { kind: 'max-tokens' } } })
+  await new Promise(resolve => setTimeout(resolve, 120))
+  check('an exhausted turn prunes the tool results once', host.prunerCalls.length === 1 && host.prunerCalls[0] === 'session-exhausted', { calls: host.prunerCalls })
+
+  // An ordinary turn end leaves the pruner alone.
+  fireSessionEvent({ id: 'session-calm', header: { cwd: root } }, { type: 'turn/end', data: { turn: 3, reason: { kind: 'stop' } } })
+  await new Promise(resolve => setTimeout(resolve, 40))
+  check('an ordinary turn does not prune', host.prunerCalls.length === 1, { calls: host.prunerCalls })
 } catch (error) {
   failure = String(error?.stack ?? error)
   check('apply() registers without throwing', false, { failure })
@@ -103,4 +142,5 @@ for (const disposer of []) disposer?.()
 const failed = results.filter(result => !result.pass)
 console.log(JSON.stringify({ total: results.length, passed: results.length - failed.length, failed: failed.length, failure, results: failed }, null, 1))
 rmSync(root, { recursive: true, force: true })
+rmSync(memoryRoot, { recursive: true, force: true })
 process.exitCode = failed.length === 0 ? 0 : 1

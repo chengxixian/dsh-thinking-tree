@@ -8,7 +8,7 @@
 
 [![License](https://img.shields.io/github/license/chengxixian/dsh-thinking-tree?color=22c55e)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.0.0-3b82f6)](package.json)
-[![Tests](https://img.shields.io/badge/tests-53%20passing-22c55e)](test)
+[![Tests](https://img.shields.io/badge/tests-30%20passing-22c55e)](test)
 [![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-111827)](https://github.com/deepseek-ai)
 [![Skills](https://img.shields.io/badge/skills-3-8b5cf6)](#三个技能)
 
@@ -112,43 +112,14 @@ session: session-4a0fbba9-eba
 - **自检**：点红色按钮 → 变成「自检中 · 第 N 轮」，面板顶部出现带 `已完成/总数` 的状态条。
 - **节点级模型**：在抽屉里选，agent 会用 `subagent` 把这个块派给那个模型。
 
-## AI 工作流（ComfyUI 式画布）
-
-右侧栏还有第二个标签页「AI 工作流」：一张可拖拽缩放的画布，把多个 AI 节点和一个 ComfyUI 后端接成一张图。
-
-<img src="docs/workflow.png" alt="AI 工作流画布：Leader、模型、输入、输出、ComfyUI 五类节点各自配色，连线画在节点之上">
-
-### 五类节点
-
-| 节点 | 作用 | 端口 |
-|---|---|---|
-| **Leader** | 就是主界面这场对话：派单、收结果、把汇总作为回复 | 用户消息 / 成员回报（入）、分发（出） |
-| **输入** | 取主界面对话栏的文字，送进下游 | 出 |
-| **输出** | 收到什么就作为主界面回复发出去（文本与图片） | 入 |
-| **模型** | 一个智能体成员：选 provider/model、工具、skill、MCP，写自己的提示词 | 入 / 交换 / 出 |
-| **交换** | 按自己的提示词收集上游、改写、按目标分发 | 入 / 出（分发） |
-| **ComfyUI** | 跑本机 ComfyUI 工作流，图片可回灌给视觉模型 | 正向 / 负向 / 参考图（入）、出 |
-
-### 三个关键约定
-
-- **上下文隔离**：每个模型节点运行时有自己的 system、messages、工具集；别的节点只能通过连线或交换节点拿到它输出的那段文字。
-- **每轮重新加载**：节点提示词与所选 skill 每次运行都从磁盘重读，改完下一次运行即生效，不缓存。
-- **ComfyUI 逆向**：扫描本机三个工作流目录（UI 格式与 API 格式都可），UI 文件按 `/object_info` 的 widget 顺序自动转成可执行图；用 litegraph 语义把真实节点图画在卡片里，点击节点即可指定提示词注入到哪个节点。
-
-<img src="docs/workflow-comfy.png" alt="ComfyUI 节点：卡片内渲染真实工作流节点图，检查器里指定正向/负向/参考图注入目标">
-
-```bash
-node --test test/workflow.test.mjs   # 23/23：图结构、隔离、交换、输入输出、Leader、skill 每轮重载
-```
 ## 结构
 
 | 文件 | 作用 |
 |---|---|
 | `index.js` | Host 半边：注册三个技能 provider、系统提示强制规则、自检循环，以及 `/api/thinking-tree` 下的 JSON 路由（`tree`/`save`/`create`/`status`/`title`/`model`/`models`/`position`/`arrange`/`delete`/`selfcheck`/`sessions`/`diag`）。 |
-| `client.js` | 浏览器半边：右侧栏标签页、思维导图布局与渲染、抽屉、可拖胶囊、自检状态条，以及 AI 工作流画布与内联 litegraph 渲染器。 |
+| `client.js` | 浏览器半边：右侧栏标签页、思维导图布局与渲染、抽屉、可拖胶囊、自检状态条。 |
 | `assets/*/SKILL.md` | 技能正文。 |
-| `workflow.js` | AI 工作流 Host：图存储、节点执行（隔离上下文）、交换节点、ComfyUI 扫描/转换/运行/注入目标。 |
-| `test/*.mjs` | `api.test.mjs`（20）、`layout.test.mjs`（10）、`workflow.test.mjs`（23）。 |
+| `test/*.mjs` | `node test/api.test.mjs`（写入链路 20 项）与 `node test/layout.test.mjs`（几何 10 项）。 |
 
 ```bash
 node test/api.test.mjs      # 20/20

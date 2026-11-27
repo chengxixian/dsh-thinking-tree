@@ -338,7 +338,8 @@ thinking-tree/
 - **写不写由你判断**：`memory {"action":"record","kind":"lesson","title":"短标题","body":"一行细节"}`。同 kind + 同标题会合并并 `hits+1`，不会堆重复条目。
 - **宿主不自动记**：没有失败自动捕获。工具失败要不要记，你自己决定——值得跨轮复用的原因和修法才记，一次性的错误别记。
 - **读**：`memory {"action":"search","query":"..."}`、`{"action":"list"}`、`{"action":"digest"}`。
-- **裁剪**：`{"action":"prune","keep":120}` 把最弱的归档到 `<会话目录>/_archive/`；`{"action":"prune_context","confirm":true}` 裁掉本会话里过长的工具结果。
+- **裁剪**：`{"action":"prune","keep":120}` 把最弱的归档到 `<会话目录>/_archive/`；`{"action":"prune_context","confirm":true}` 裁掉本会话里过长的工具结果；加上 `"sessionId":"session-xxxx"` 可以救另一个会话（返回裁剪前后的 `pressureTokens`）。
+- **上下文耗尽会自动兜底**：某轮以 `max-tokens` 结束、上下文压力 ≥85% 时，宿主自动对该会话跑一次工具结果裁剪（60 秒冷却），并记一条 `kind: tool` 的记忆。它不走 `tokenMeter.measure()`，所以压缩本身报错时仍然有效。
 - 每轮的 digest 只带最重要的 6 条。记忆库是"压缩后的上下文"，不是流水账：写教训和原因，不抄整段工具输出。
 
 ## 统一库（跨对话、跨项目共享）

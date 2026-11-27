@@ -17,8 +17,7 @@ import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { registerWorkflowRoutes } from './workflow.js'
-import { memoryDirOf, readEntries, registerMemory } from './memory.js'
+import { memoryDirOf, readEntries, recordMemory, registerMemory } from './memory.js'
 import { registerEnforcement } from './enforce.js'
 import { registerLibraries } from './libraries.js'
 
@@ -235,6 +234,7 @@ export function apply(ctx) {
     () => ctx.on('session/event', (session, event) => {
       if (event?.type !== 'turn/end') return
       void selfCheckAfterTurn(ctx, { session })
+      if (event.data?.reason?.kind === 'max-tokens') void pruneExhaustedSession(ctx, session)
     }),
     'thinking-tree: self-check loop',
   )
@@ -285,13 +285,6 @@ export function apply(ctx) {
       `thinking-tree: route ${route.path}`,
     )
   }
-
-  // The AI workflow panel: its own graph store, isolated node contexts, and the
-  // ComfyUI bridge. Kept in workflow.js so the tree half stays readable.
-  ctx.effect(() => {
-    registerWorkflowRoutes(ctx)
-    return () => undefined
-  }, 'thinking-tree: ai workflow routes')
 }
 
 /* ------------------------------------------------------------------ *
@@ -770,6 +763,60 @@ async function serveSelfCheck(ctx, request) {
     return json({ ok: true, selfcheck: wanted, poked, pokeError })
   } catch (error) {
     return json({ ok: false, error: 'selfcheck-failed', message: String(error?.message ?? error) }, 500)
+  }
+}
+
+/** Context pressure above which an exhausted turn is treated as memory pressure. */
+const EXHAUSTION_RATIO = 0.85
+
+/** Minimum delay between two automatic prunes of the same Session. */
+const EXHAUSTION_COOLDOWN_MS = 60_000
+
+/** Last automatic prune per Session, so one stuck turn cannot loop the pruner. */
+const lastExhaustionPrune = new Map()
+
+/**
+ * Shrink a Session that keeps ending its turns with `max-tokens` while its
+ * context is nearly full.
+ *
+ * Automatic compaction is the normal answer, but it goes through
+ * `tokenMeter.measure()`, and one unpaired surface event poisons that
+ * measurement project-wide for the Session: `measure()` then throws at the same
+ * seq forever and every turn ends after one output token. The tool-result
+ * pruner prices with `estimateMessage()` instead, so it still works on such a
+ * Session and buys back the context the model needs.
+ * @param ctx - Host context.
+ * @param session - the Session whose turn just ended.
+ * @returns {Promise<void>} resolves after the attempt; never rejects.
+ */
+async function pruneExhaustedSession(ctx, session) {
+  try {
+    const sessionId = session?.id
+    if (typeof sessionId !== 'string' || sessionId === '') return
+    const pruner = ctx.get('toolResultPruner')
+    const meter = ctx.get('tokenMeter')
+    if (typeof pruner?.pruneSession !== 'function' || typeof meter?.contextPressure !== 'function') return
+    const pressure = meter.contextPressure(session)
+    const window = Number(pressure?.contextWindow ?? 0)
+    const used = Number(pressure?.pressureTokens ?? 0)
+    if (!(window > 0) || used / window < EXHAUSTION_RATIO) return
+    const now = Date.now()
+    if (now - Number(lastExhaustionPrune.get(sessionId) ?? 0) < EXHAUSTION_COOLDOWN_MS) return
+    lastExhaustionPrune.set(sessionId, now)
+    const result = pruner.pruneSession(session)
+    const pruned = Array.isArray(result?.pruned) ? result.pruned.length : 0
+    const after = Number(meter.contextPressure(session)?.pressureTokens ?? 0)
+    if (pruned === 0) return
+    await recordMemory(memoryDirOf(sessionId), {
+      action: 'record',
+      kind: 'tool',
+      title: `自动 prune：${pruned} 条工具结果被裁掉`,
+      body: `turn/end 原因 max-tokens，压力 ${used}/${window}（${Math.round(used / window * 100)}%）→ 裁掉 ${pruned} 条工具结果、${Number(result?.charsRemoved ?? 0)} 字符，压力降到 ${after}。压缩仍然可能因 token-meter 投影损坏而报错，用法见 memory prune_context。`,
+      importance: 3,
+      tags: ['auto-prune', 'context'],
+    }).catch(() => undefined)
+  } catch {
+    // A guard must never break the session event feed.
   }
 }
 

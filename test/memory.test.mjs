@@ -88,9 +88,23 @@ check('the default root is one shared folder', memoryRoot({ USERPROFILE: 'C:/Use
 const routes = []
 const tools = []
 const listeners = new Map()
+const prunedSessions = []
+const targetSession = 'session-4d3a0179-test'
+let pressureNow = 900_000
+const pruner = {
+  pruneSession(session) {
+    prunedSessions.push(session?.id)
+    pressureNow = 800_000
+    return { pruned: [{ originalSeq: 1, replacementSeq: 2 }], charsRemoved: 1234 }
+  },
+}
+const meter = { contextPressure: () => ({ pressureTokens: pressureNow, contextWindow: 1_000_000 }) }
 const ctx = {
   get(name) {
     if (name === 'tools') return { register: definition => { tools.push(definition); return () => undefined } }
+    if (name === 'toolResultPruner') return pruner
+    if (name === 'tokenMeter') return meter
+    if (name === 'sessions') return { get: id => ((id === sessionId || id === targetSession) ? { id, append() {} } : undefined) }
     return undefined
   },
   on(name, handler) { listeners.set(name, handler); return () => listeners.delete(name) },
@@ -125,6 +139,26 @@ registerMemory(ctx, {
   check('the memory tool records and renders a digest', first.ok === true && String(text[0]?.text ?? '').includes('工具失败'), {
     first: first.ok, digest: digest.digest?.slice(0, 40),
   })
+}
+
+// `prune_context` targets another Session and reports real pressure facts, so a
+// conversation whose compaction is broken can still be rescued.
+{
+  const memoryTool = tools.find(tool => tool.name === 'memory')
+  const result = await memoryTool.execute(
+    { action: 'prune_context', confirm: true, sessionId: targetSession },
+    { agent: { id: sessionId } },
+  )
+  const text = String(memoryTool.output.render({ action: 'prune_context' }, result)[0]?.text ?? '')
+  check('prune_context rescues another session', result.ok === true
+    && prunedSessions.length === 1
+    && prunedSessions[0] === targetSession, { result, pruned: prunedSessions })
+  check('prune_context reports the pressure it removed', result.before?.pressureTokens === 900_000
+    && result.after?.pressureTokens === 800_000
+    && result.pruned === 1
+    && result.charsRemoved === 1234, { before: result.before, after: result.after, text })
+  const refused = await memoryTool.execute({ action: 'prune_context', sessionId: targetSession }, { agent: { id: sessionId } })
+  check('prune_context refuses without confirm', refused.ok === false && prunedSessions.length === 1, refused)
 }
 
 // Nothing is captured behind the model's back: no session listener at all.

@@ -460,7 +460,7 @@ export function registerMemory(ctx, deps) {
           action: {
             type: 'string',
             enum: ['record', 'search', 'list', 'forget', 'prune', 'digest', 'prune_context'],
-            description: 'record = write one entry; search/list = read; forget = delete one; prune = archive the weakest beyond `keep`; digest = render the injected memory block; prune_context = trim oversized tool results in this session.',
+            description: 'record = write one entry; search/list = read; forget = delete one; prune = archive the weakest beyond `keep`; digest = render the injected memory block; prune_context = trim oversized tool results in a session (default this one).',
           },
           kind: {
             type: 'string',
@@ -474,7 +474,11 @@ export function registerMemory(ctx, deps) {
           query: { type: 'string', description: 'search: substring over title, body, tags.' },
           id: { type: 'string', description: 'forget: entry id.' },
           keep: { type: 'integer', description: 'prune: entries to keep (default 120).' },
-          confirm: { type: 'boolean', description: 'prune_context: must be true; it rewrites this session log.' },
+          confirm: { type: 'boolean', description: 'prune_context: must be true; it rewrites a session log.' },
+          sessionId: {
+            type: 'string',
+            description: 'prune_context: target Session id; omit to prune this conversation. Use it to rescue another session whose compaction is broken.',
+          },
         },
         required: ['action'],
       },
@@ -526,14 +530,35 @@ export function registerMemory(ctx, deps) {
       return { ok: true, action, digest: renderMemoryDigest(entries), count: entries.length }
     }
     if (action === 'prune_context') {
-      if (args.confirm !== true) return { ok: false, action, error: 'prune_context rewrites this session log; pass confirm: true' }
+      if (args.confirm !== true) return { ok: false, action, error: 'prune_context rewrites a session log; pass confirm: true' }
       const pruner = ctx.get('toolResultPruner')
-      const session = exec?.agent?.session
-      if (pruner === undefined || pruner === null || typeof pruner.pruneSession !== 'function' || session === undefined) {
+      if (pruner === undefined || pruner === null || typeof pruner.pruneSession !== 'function') {
         return { ok: false, action, error: 'tool-result pruner unavailable in this Host' }
       }
-      const result = pruner.pruneSession(session)
-      return { ok: true, action, pruned: result?.pruned ?? 0, savedTokens: result?.savedTokens ?? 0 }
+      const targetId = String(args.sessionId ?? '') || String(exec?.agent?.id ?? '')
+      const session = resolveSession(ctx, targetId, exec)
+      if (session === undefined) return { ok: false, action, error: `no session ${targetId || '(caller)'}` }
+      // The pruner prices shadowed nodes with tokenMeter.estimateMessage, never
+      // measure(), so it still works on a session whose measurement projection is
+      // poisoned and whose compaction therefore cannot run at all.
+      const before = pressureOf(ctx, session)
+      let result
+      try {
+        result = pruner.pruneSession(session)
+      } catch (error) {
+        return { ok: false, action, sessionId: targetId, before, error: String(error?.message ?? error) }
+      }
+      const after = pressureOf(ctx, session)
+      const pruned = Array.isArray(result?.pruned) ? result.pruned.length : Number(result?.pruned ?? 0)
+      return {
+        ok: true,
+        action,
+        sessionId: targetId,
+        pruned,
+        charsRemoved: Number(result?.charsRemoved ?? 0),
+        before,
+        after,
+      }
     }
     return { ok: false, error: `unknown action ${action}` }
   }
@@ -547,6 +572,48 @@ export function registerMemory(ctx, deps) {
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) return 20
     return Math.min(100, Math.max(1, Math.round(parsed)))
+  }
+}
+
+/**
+ * Resolve one Session object, preferring the calling Agent's own Session.
+ * @param {object} ctx - Host context.
+ * @param {string} sessionId - target session identity.
+ * @param {object} exec - tool execution contract (carries the calling agent).
+ * @returns {object|undefined} the Session, if the Host exposes it.
+ */
+function resolveSession(ctx, sessionId, exec) {
+  const caller = exec?.agent
+  if (caller !== undefined && caller !== null && caller.id === sessionId) {
+    const own = caller.session ?? caller.ctx?.session
+    if (own !== undefined && typeof own.append === 'function') return own
+  }
+  try {
+    const record = ctx.get('sessions')?.get?.(sessionId)
+    if (record === undefined || record === null) return undefined
+    if (typeof record.append === 'function') return record
+    const wrapped = record.session ?? record.value
+    if (wrapped !== undefined && typeof wrapped.append === 'function') return wrapped
+  } catch {
+    // A Host without a readable session registry simply cannot target one.
+  }
+  return undefined
+}
+
+/**
+ * Read one Session's context pressure without touching the measurement
+ * projection; a poisoned measurement must not hide the pressure facts.
+ * @param {object} ctx - Host context.
+ * @param {object} session - target Session.
+ * @returns {{pressureTokens: number, contextWindow: number}|undefined} pressure facts.
+ */
+function pressureOf(ctx, session) {
+  try {
+    const value = ctx.get('tokenMeter')?.contextPressure?.(session)
+    if (value === undefined || value === null) return undefined
+    return { pressureTokens: value.pressureTokens, contextWindow: value.contextWindow }
+  } catch {
+    return undefined
   }
 }
 
@@ -586,6 +653,11 @@ function renderToolText(value) {
   if (action === 'digest') return value.digest === '' ? 'memory digest: empty' : value.digest
   if (action === 'forget') return `memory forget: ${value.removed?.length ?? 0} removed`
   if (action === 'prune') return `memory prune: ${value.archived?.length ?? 0} archived, ${value.remaining ?? 0} remain`
-  if (action === 'prune_context') return `memory prune_context: ${value.pruned ?? 0} tool results trimmed`
+  if (action === 'prune_context') {
+    const before = value.before?.pressureTokens
+    const after = value.after?.pressureTokens
+    const pressure = before !== undefined && after !== undefined ? `, pressure ${before} -> ${after}` : ''
+    return `memory prune_context: ${value.pruned ?? 0} tool results trimmed (${value.charsRemoved ?? 0} chars${pressure})`
+  }
   return JSON.stringify(value)
 }
