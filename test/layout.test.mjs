@@ -12,7 +12,14 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(join(here, '..', 'client.js'), 'utf8')
 const start = source.indexOf('const GEO')
-const end = source.indexOf('/* ---------------------------------------------------------------- *\n     * Styles')
+// The closing marker is a comment banner; accept either line ending so the
+// test does not break when the file is reformatted.
+const banner = (() => {
+  const lf = source.indexOf('/* ---------------------------------------------------------------- *\n     * Styles')
+  if (lf >= 0) return lf
+  return source.indexOf('/* ---------------------------------------------------------------- *\r\n     * Styles')
+})()
+const end = banner
 if (start < 0 || end < 0) throw new Error('the geometry block moved; update this test')
 const api = new Function(`${source.slice(start, end)}; return { GEO, layoutMindMap, wrapText }`)()
 

@@ -1,7 +1,7 @@
 {
   "name": "dsh-thinking-tree",
   "version": "1.0.0",
-  "description": "Tree-shaped chain of thought in the DeepSeek Harness right sidebar: goal on top, approach in the middle, concrete steps at the bottom, one editable Markdown file per node.",
+  "description": "Tree-shaped chain of thought in the DeepSeek Harness right sidebar, enforced by the Host: per-step digest, first-turn gate, per-conversation memory bank, and one shared MCP/skill library.",
   "type": "module",
   "exports": {
     ".": "./index.js",
@@ -11,6 +11,7 @@
   },
   "files": [
     "index.js",
+    "workflow.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
@@ -19,7 +20,10 @@
     "icon.svg",
     "README.md",
     "README.zh.md",
-    "LICENSE"
+    "LICENSE",
+    "memory.js",
+    "enforce.js",
+    "libraries.js"
   ],
   "keywords": [
     "dsh",

@@ -8,7 +8,7 @@
 
 [![License](https://img.shields.io/github/license/chengxixian/dsh-thinking-tree?color=22c55e)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.0.0-3b82f6)](package.json)
-[![Tests](https://img.shields.io/badge/tests-30%20passing-22c55e)](test)
+[![Tests](https://img.shields.io/badge/tests-53%20passing-22c55e)](test)
 [![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-111827)](https://github.com/deepseek-ai)
 [![Skills](https://img.shields.io/badge/skills-3-8b5cf6)](#the-three-skills)
 
@@ -112,6 +112,34 @@ session: session-4a0fbba9-eba
 - **Self-check**: click the red button. It turns into `自检中 · 第 N 轮` and the panel shows a status strip with `done/total` requirements.
 - **Per-node model**: set it in the drawer; the agent will delegate that block with `subagent`.
 
+## AI workflow (ComfyUI-style canvas)
+
+The right sidebar has a second tab, **AI workflow**: a pannable, zoomable canvas that wires several AI nodes plus a local ComfyUI backend into one graph.
+
+<img src="docs/workflow.png" alt="AI workflow canvas: Leader, model, input, output and ComfyUI nodes each with their own color, links drawn above the cards">
+
+### Node kinds
+
+| Node | What it does | Ports |
+|---|---|---|
+| **Leader** | *Is* this conversation: dispatches the task, collects results, posts the summary back | user message / member results (in), dispatch (out) |
+| **Input** | Reads the newest text typed in the main composer | out |
+| **Output** | Whatever arrives becomes the main-chat reply (text and images) | in |
+| **Model** | One agent member: provider/model, tools, skills, MCP, its own prompt | in / exchange / out |
+| **Exchange** | Follows its own prompt to collect upstream output, rewrite it, route it | in, dispatch |
+| **ComfyUI** | Runs a local ComfyUI workflow; images can flow into a vision model | positive / negative / reference (in), out |
+
+### Three rules that matter
+
+- **Isolated context.** Every model node runs with its own system prompt, message array and tool set; another node only ever sees the text an edge carries.
+- **Reloaded every round.** A node's prompt and its selected skills are re-read from disk on each run, so an edit takes effect on the next run — nothing is cached.
+- **ComfyUI, reverse-engineered.** All workflows in the three local folders are listed (UI and API format). UI files are converted to a runnable graph using `/object_info` widget order, and the real node graph is drawn inside the card with litegraph semantics; click a node to choose which one receives the prompt.
+
+<img src="docs/workflow-comfy.png" alt="ComfyUI node: the real workflow graph rendered inside the card, injection targets chosen in the inspector">
+
+```bash
+node --test test/workflow.test.mjs   # 23/23: graph shape, isolation, exchange, I/O, leader, skill reload
+```
 ## Architecture
 
 | File | Role |

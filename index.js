@@ -17,6 +17,10 @@ import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { registerWorkflowRoutes } from './workflow.js'
+import { memoryDirOf, readEntries, registerMemory } from './memory.js'
+import { registerEnforcement } from './enforce.js'
+import { registerLibraries } from './libraries.js'
 
 /** The skill's identifier. */
 const SKILL_NAME = 'thinking-tree'
@@ -129,23 +133,22 @@ let reminderRegistered = false
 /** Set once the decomposition mandate is registered; reported through diagnostics. */
 let breakdownRegistered = false
 
-/** The reminder that puts the chain back in front of the model on every step. */
+/** The reminder that keeps the chain in front of the model without injecting messages. */
 const REMINDER_TEXT = [
-  '【思考链 · 每轮都要看】',
+  '【思考链 · 硬性规定 · 每轮生效】',
   '这个会话的思考链在 `thinking-tree/`（工作区里的一个文件夹，一个节点一个 md 文件）。',
   '',
-  '**动手前先问自己一句：这一轮用户提了什么新要求？树里有对应节点吗？没有就先加节点再动手。**',
-  '漏加节点＝这一轮的要求会消失，后面没人记得。加节点只要几秒，别省。',
-  '如果 `00-goal.md` 还叫「本对话的思考链」（宿主自动建的占位），第一轮就把它改成真实目标，并挂出第二层要求。',
+  '**第一轮就要有链**：如果 `00-goal.md` 还叫「本对话的思考链」，先用 `thinking_tree` 的 `init` 一次写完目标与第二层要求；没建链之前，除 `thinking_tree`/`memory`/`write`/`edit`/`read`/`glob`/`grep` 外的工具会被宿主直接拒绝。',
+  '**每轮开始自己读链**：读 `00-goal.md` + 当前 `active` 节点，或调 `thinking_tree {action:"list"}`（要目标/进度/记忆的紧凑摘要就用 `{action:"digest"}`）。宿主**不会**把摘要塞进对话，别等它出现。',
+  '**用户提出新目标**（与现有目标不同的另一件事）→ `thinking_tree {action:"add_goal"}` 建一条新链，不要塞进旧目标。',
   '',
-  '每轮开始：读 `00-goal.md` 和第二层每一条要求，再看当前唯一 `active` 的那条链——不要凭记忆接着做。',
-  '每轮结束：检查并更新节点。做过的节点改 `status`，正文补一行结果 + 证据（文件路径、命令输出、接口返回）；没做的保持原状，不要标 done。',
+  '每轮开始：读 `00-goal.md`（或 `thinking_tree {action:"list"}`），看当前唯一 `active` 的那条链。',
+  '每轮结束：做过的节点改 `status`（`thinking_tree {action:"status"}`），正文补一行结果 + 证据（文件路径、命令输出、接口返回）。',
   '每做一步就更新，不要攒到最后一起写。',
   '',
-  '节点正文要详细：写清用什么做、分几步、关键参数/命令/接口、做完长什么样、怎么验证。一句话的节点等于没写——面板默认只显示标题和一行摘要，点开才展开正文，所以正文写得越具体越有用。',
+  '**记忆库（你自己判断该不该写）**：发现值得跨轮留存的教训、失败原因、关键决定、做完的事，就用 `memory {action:"record"}` 记一条——kind 取 failure/lesson/tool/decision/fact/done，标题一行、正文一行。宿主不会自动记录，也不需要每次都记；没价值的别写。记忆是 `<memory root>/<session>/<id>.md`（默认 `~/.dsh/agent-memory/`），每条对话一个子目录、互不可见。上下文变长时用 `memory {action:"prune_context", confirm:true}` 裁掉无用工具结果。',
+  '**统一库**：所有 MCP 用 `mcp_library` 管，所有 Skill 用 `skill_library` 管——两者都在一个全项目共享的文件夹里，不要散落到各项目或 profile。',
   '',
-  '用户提了新要求：先在第二层加一个节点，再动手。',
-  '收尾前：状态写进文件，不要只放在记忆里——被压缩之后只剩磁盘上的东西。',
   '自检：`00-goal.md` 的 `selfcheck: on` 时，每轮结束都会收到「开始自检 · 第 N 轮」，按 `thinking-tree-selfcheck` 技能执行。',
 ].join('\n')
 
@@ -225,11 +228,41 @@ export function apply(ctx) {
   )
 
   // The self-check loop: while the goal node says `selfcheck: on`, every turn
-  // that ends starts the next verification round.
+  // that ends starts the next verification round. `turn/end` is a Session
+  // event, not a Host event, so it arrives through the session feed — listening
+  // for a top-level `turn/end` never fired.
   ctx.effect(
-    () => ctx.on('turn/end', (payload) => { void selfCheckAfterTurn(ctx, payload) }),
+    () => ctx.on('session/event', (session, event) => {
+      if (event?.type !== 'turn/end') return
+      void selfCheckAfterTurn(ctx, { session })
+    }),
     'thinking-tree: self-check loop',
   )
+
+  // The hard rule, the memory bank, and the two shared libraries. Each one keeps
+  // its state on disk, so a compaction or a restart loses nothing.
+  const hostDeps = {
+    readJson,
+    json,
+    folderDirOf: (sessionId) => dirOf(ctx, sessionId),
+    memoryDirOfSession: (sessionId) => memoryDirOf(sessionId),
+    routePrefix: ROUTE_PREFIX,
+  }
+  registerMemory(ctx, hostDeps)
+  registerEnforcement(ctx, {
+    stateOf: (sessionId) => stateOf(ctx, sessionId),
+    isSubagent: (sessionId) => isSubagent(ctx, sessionId),
+    ensureSeed: (sessionId) => ensureSeeded(ctx, sessionId),
+    folderLabel: (sessionId) => `${FOLDER}/${sessionDirName(sessionKey(sessionId))}`,
+    createNode: (sessionId, input) => createNodeFor(ctx, sessionId, input),
+    setTitle: (sessionId, name, title) => setNodeField(ctx, sessionId, name, 'title', title),
+    saveBody: (sessionId, name, body) => saveNodeBody(ctx, sessionId, name, body),
+    appendBody: (sessionId, name, text) => appendNodeBody(ctx, sessionId, name, text),
+    setStatus: (sessionId, name, status) => setNodeField(ctx, sessionId, name, 'status', status),
+    findNode: (sessionId, key) => findNodeOf(ctx, sessionId, key),
+    listNodes: (sessionId) => listNodesOf(ctx, sessionId),
+  })
+  registerLibraries(ctx, hostDeps)
 
   const routes = [
     { path: `${ROUTE_PREFIX}/tree`, methods: ['GET'], fetch: (request) => serveTree(ctx, request) },
@@ -252,6 +285,13 @@ export function apply(ctx) {
       `thinking-tree: route ${route.path}`,
     )
   }
+
+  // The AI workflow panel: its own graph store, isolated node contexts, and the
+  // ComfyUI bridge. Kept in workflow.js so the tree half stays readable.
+  ctx.effect(() => {
+    registerWorkflowRoutes(ctx)
+    return () => undefined
+  }, 'thinking-tree: ai workflow routes')
 }
 
 /* ------------------------------------------------------------------ *
@@ -310,6 +350,197 @@ function folderOf(ctx, sessionId) {
 function sessionDirName(key) {
   const tail = key.startsWith('session-') ? key.slice('session-'.length) : key
   return `s-${tail.replace(/[^A-Za-z0-9]/g, '').slice(0, 8) || 'unknown'}`
+}
+
+/* ------------------------------------------------------------------ *
+ * Host helpers shared with memory.js / enforce.js / libraries.js
+ * ------------------------------------------------------------------ */
+
+/**
+ * Resolve one session's tree directory, or undefined when it has no workspace.
+ * @param ctx - Host context.
+ * @param sessionId - Session identity.
+ * @returns the absolute folder, or undefined.
+ */
+function dirOf(ctx, sessionId) {
+  const folder = folderOf(ctx, sessionId)
+  return folder.error === undefined ? folder.dir : undefined
+}
+
+/**
+ * Whether a session is a child agent. Child sessions keep no chain of their own:
+ * they are tools of the parent conversation, and gating them would deadlock
+ * every subagent and workflow node.
+ * @param ctx - Host context.
+ * @param sessionId - Session identity.
+ * @returns whether it is a child.
+ */
+function isSubagent(ctx, sessionId) {
+  const header = ctx.get('sessions')?.get?.(sessionId)?.header
+  if (header === undefined || header === null) return false
+  if (header.origin === 'subagent') return true
+  return typeof header.parentSession === 'string' && header.parentSession !== ''
+}
+
+/**
+ * Make sure one conversation has its seeded goal node.
+ * @param ctx - Host context.
+ * @param sessionId - Session identity.
+ * @returns resolves once the folder exists.
+ */
+async function ensureSeeded(ctx, sessionId) {
+  const folder = folderOf(ctx, sessionId)
+  if (folder.error !== undefined) return
+  await seedEmptyTree(folder)
+}
+
+/**
+ * Read everything the per-step digest needs for one conversation.
+ * @param ctx - Host context.
+ * @param sessionId - Session identity.
+ * @returns `{dir, exists, shaped, memory}`.
+ */
+async function stateOf(ctx, sessionId) {
+  const folder = folderOf(ctx, sessionId)
+  if (folder.error !== undefined) {
+    return { dir: undefined, exists: false, shaped: { nodes: [], roots: [] }, memory: [] }
+  }
+  const { tree, shaped } = await readScopedTree(folder, sessionId)
+  let memory = []
+  try {
+    memory = (await readEntries(memoryDirOf(sessionId))).entries
+  } catch {
+    memory = []
+  }
+  return { dir: folder.dir, exists: tree.exists && tree.nodes.length > 0, shaped, memory }
+}
+
+/**
+ * Create one node file for a session.
+ * @param ctx - Host context.
+ * @param sessionId - Session identity.
+ * @param {{parent?: string, title?: string, body?: string}} input - node fields.
+ * @returns {Promise<{name: string, id: string}>} the created node.
+ */
+async function createNodeFor(ctx, sessionId, input) {
+  const folder = folderOf(ctx, sessionId)
+  if (folder.error !== undefined) throw new Error(folder.message)
+  const title = typeof input.title === 'string' && input.title.trim() !== '' ? input.title.trim().slice(0, 120) : 'New node'
+  const parent = typeof input.parent === 'string' ? input.parent : ''
+  const tree = await readTree(folder.dir)
+  const siblings = tree.nodes.filter(node => node.parent === parent)
+  const order = siblings.length === 0 ? 0 : Math.max(...siblings.map(node => node.order)) + 1
+  const base = `${String(order).padStart(2, '0')}-${slug(title)}`
+  const taken = new Set(tree.nodes.map(node => node.name))
+  let name = `${base}.md`
+  for (let index = 2; taken.has(name); index += 1) name = `${base}-${index}.md`
+  const id = name.replace(/\.md$/, '')
+  const body = typeof input.body === 'string' && input.body.trim() !== '' ? input.body.trim() : `# ${title}\n`
+  const content = [
+    '---',
+    `id: ${quote(id)}`,
+    `parent: ${quote(parent)}`,
+    `order: ${order}`,
+    `title: ${quote(title)}`,
+    ...(parent === '' ? [`session: ${quote(sessionKey(sessionId))}`] : []),
+    'status: pending',
+    `level: ${parent === '' ? 'goal' : 'step'}`,
+    `updated: ${new Date().toISOString()}`,
+    '---',
+    '',
+    body,
+    '',
+  ].join('\n')
+  await mkdir(folder.dir, { recursive: true })
+  await writeFile(join(folder.dir, name), content, 'utf8')
+  return { name, id }
+}
+
+/**
+ * Rewrite one front-matter field of a node.
+ * @param ctx - Host context.
+ * @param sessionId - Session identity.
+ * @param name - node file name.
+ * @param field - front-matter key.
+ * @param value - new value.
+ * @returns resolves once written.
+ */
+async function setNodeField(ctx, sessionId, name, field, value) {
+  const folder = folderOf(ctx, sessionId)
+  if (folder.error !== undefined) throw new Error(folder.message)
+  const path = join(folder.dir, name)
+  const text = await readFile(path, 'utf8')
+  await writeFile(path, writeField(writeField(text, field, value), 'updated', new Date().toISOString()), 'utf8')
+}
+
+/**
+ * Replace one node's Markdown body, keeping its front matter.
+ * @param ctx - Host context.
+ * @param sessionId - Session identity.
+ * @param name - node file name.
+ * @param body - new body.
+ * @returns resolves once written.
+ */
+async function saveNodeBody(ctx, sessionId, name, body) {
+  const folder = folderOf(ctx, sessionId)
+  if (folder.error !== undefined) throw new Error(folder.message)
+  const path = join(folder.dir, name)
+  let existing = ''
+  try {
+    existing = await readFile(path, 'utf8')
+  } catch {
+    existing = ''
+  }
+  const merged = mergeBody(existing, body)
+  await writeFile(path, writeField(merged, 'updated', new Date().toISOString()), 'utf8')
+}
+
+/**
+ * Append one line to a node's body.
+ * @param ctx - Host context.
+ * @param sessionId - Session identity.
+ * @param name - node file name.
+ * @param text - line to append.
+ * @returns resolves once written.
+ */
+async function appendNodeBody(ctx, sessionId, name, text) {
+  const folder = folderOf(ctx, sessionId)
+  if (folder.error !== undefined) throw new Error(folder.message)
+  const path = join(folder.dir, name)
+  const existing = await readFile(path, 'utf8')
+  const merged = mergeBody(existing, `${existing.trimEnd()}\n${text}\n`)
+  await writeFile(path, writeField(merged, 'updated', new Date().toISOString()), 'utf8')
+}
+
+/**
+ * List the shaped chain of one session.
+ * @param ctx - Host context.
+ * @param sessionId - Session identity.
+ * @returns the shaped tree.
+ */
+async function listNodesOf(ctx, sessionId) {
+  const folder = folderOf(ctx, sessionId)
+  if (folder.error !== undefined) return { nodes: [], roots: [] }
+  const { shaped } = await readScopedTree(folder, sessionId)
+  return shaped
+}
+
+/**
+ * Find one node by file name, id, or exact title.
+ * @param ctx - Host context.
+ * @param sessionId - Session identity.
+ * @param key - lookup key.
+ * @returns the node, or undefined.
+ */
+async function findNodeOf(ctx, sessionId, key) {
+  const raw = String(key ?? '').trim()
+  if (raw === '') return undefined
+  const shaped = await listNodesOf(ctx, sessionId)
+  const nodes = shaped.nodes ?? []
+  const name = raw.endsWith('.md') ? raw : `${raw}.md`
+  return nodes.find(node => node.name === name)
+    ?? nodes.find(node => node.id === raw)
+    ?? nodes.find(node => node.title === raw)
 }
 
 /**

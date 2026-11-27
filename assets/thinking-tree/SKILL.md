@@ -4,6 +4,23 @@
 
 用户可以在右侧边栏把这张图当思维导图看（滚轮缩放、拖拽平移），并直接修改；你在实现任务前必须先读它，并按照里面的要求去做。
 
+## 硬机制（宿主强制，不靠你记住）
+
+这个会话里，链不是"建议"，是宿主会检查的运行时事实：
+
+- **没有自动注入**：宿主不会往对话里塞任何摘要消息。链就是一个文件夹，**每轮开始自己读**：`00-goal.md` + 当前 `active` 节点，或
+  `thinking_tree {"action":"list"}`（紧凑目录）、`{"action":"digest"}`（目标/进度/记忆摘要，按需拉取）。
+- **第一轮门禁**：目标节点还是占位（「本对话的思考链」）或还没有第二层节点时，除 `thinking_tree` / `memory` / `write` / `edit` / `read` / `glob` / `grep` 外的工具会被直接拒绝。一次调用解除：
+
+  ```
+  thinking_tree {"action":"init","title":"<本对话真正的目标>","requirements":[{"title":"<第一条要求>"}]}
+  ```
+
+- **新目标 = 新根**：用户说的是一件与现有目标不同的事 → `thinking_tree {"action":"add_goal","title":"...","requirements":[...]}`，不要塞进旧目标。
+- **子代理不受门禁**：子会话只服务父会话，不单独建链。
+
+工具：`thinking_tree`（init / add_requirement / add_goal / status / note / list / digest）。直接写 `00-goal.md` 与子节点文件效果等价。
+
 ## 执行纪律
 
 这棵树不是展示，是**契约**：
@@ -311,3 +328,21 @@ thinking-tree/
 - ❌ 把"我打算怎么做"塞进第二层（第二层是用户的要求）。
 - ❌ 只写目标不写要求，或只写路线不写具体命令。
 - ❌ 用户改过之后，按自己记忆里的旧方案继续做。
+
+## 记忆库（`~/.dsh/agent-memory/<session>/`）
+
+一条对话一个子目录，扁平放在**一个统一的记忆根**里：`<memory root>/<完整 session id>/<id>.md`。根目录默认 `%USERPROFILE%\.dsh\agent-memory`，可用 `DSH_AGENT_MEMORY` 覆盖。别的对话读不到你的子目录。
+
+每条记忆一个 md 文件，front matter 含 `kind`（failure / lesson / tool / decision / fact / done）、`importance`（1-5）、`hits`。
+
+- **写不写由你判断**：`memory {"action":"record","kind":"lesson","title":"短标题","body":"一行细节"}`。同 kind + 同标题会合并并 `hits+1`，不会堆重复条目。
+- **宿主不自动记**：没有失败自动捕获。工具失败要不要记，你自己决定——值得跨轮复用的原因和修法才记，一次性的错误别记。
+- **读**：`memory {"action":"search","query":"..."}`、`{"action":"list"}`、`{"action":"digest"}`。
+- **裁剪**：`{"action":"prune","keep":120}` 把最弱的归档到 `<会话目录>/_archive/`；`{"action":"prune_context","confirm":true}` 裁掉本会话里过长的工具结果。
+- 每轮的 digest 只带最重要的 6 条。记忆库是"压缩后的上下文"，不是流水账：写教训和原因，不抄整段工具输出。
+
+## 统一库（跨对话、跨项目共享）
+
+- **MCP**：`mcp_library`（list / add / remove / enable / disable / install / sync / path）。定义在 `<库根>/mcp/<id>/mcp.json`，宿主启动时注册成 `mcp__<id>__<tool>`。库根默认 `%USERPROFILE%\.dsh\agent-library`，可用 `DSH_AGENT_LIBRARY` 覆盖；`install` 的 npm 缓存也落在库里。
+- **Skill**：`skill_library`（list / create / import / remove / path）。技能在 `<库根>/skills/<name>/SKILL.md`，通过同一个技能注册表进入目录，和内置技能并列。
+- **规则**：新的 MCP 与技能一律进库，不要写进项目目录，也不要改 profile 的 patch。已配置在 profile 里的 MCP 可以用 `mcp_library {"action":"sync"}` 镜像进库。
